@@ -1,0 +1,25 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+evm_version = "cancun"
+via-ir = true
+optimizer = true
+optimizer_runs = 44444444
+
+remappings = [
+    "@uniswap/v4-core/=lib/v4-core/",
+    "@uniswap/v4-periphery/=lib/v4-hooks-public/lib/v4-periphery/",
+    "@uniswap/blocknumberish/=lib/v4-hooks-public/lib/blocknumberish/",
+    "@openzeppelin/=lib/v4-hooks-public/lib/openzeppelin-contracts/",
+    "openzeppelin-contracts/=lib/v4-hooks-public/lib/openzeppelin-contracts/",
+    "solmate/=lib/v4-core/lib/solmate/",
+    "v4-core/=lib/v4-core/src/",
+    "v4-hooks-public/=lib/v4-hooks-public/src/",
+    "alf/=lib/v4-hooks-public/src/alf/"
+]
+
+# The Sepolia deployment evidence was produced with this compiler. Keep the default profile on
+# auto-detection because v4-core's PoolManager tests require their exact 0.8.26 pragma.
+[profile.sepolia]
+solc_version = "0.8.33"

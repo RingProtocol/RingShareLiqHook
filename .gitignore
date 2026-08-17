@@ -1,0 +1,8 @@
+# Foundry build artifacts
+
+broadcast/
+cache/
+out/
+*/*.log
+.env*
+temp
