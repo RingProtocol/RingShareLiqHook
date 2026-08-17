@@ -7,7 +7,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
-import {BaseHook} from "v4-hooks-public/base/BaseHook.sol";
+import {BaseHook} from "../src/utils/BaseHook.sol";
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
 
