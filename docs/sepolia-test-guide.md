@@ -42,7 +42,7 @@ TOKEN_B_ADDR=0x...
 
 ### 3. fwTokens must exist
 
-`FewFactory.getWrappedToken(TOKEN_A)` and `getWrappedToken(TOKEN_B)` must return non-zero addresses — `initializePool` reverts with `WrappedTokenNotFound` otherwise. If they do not exist yet, call `FewFactory.createToken(TOKEN_A_ADDR)` first.
+`FewFactory.getWrappedToken(TOKEN_A)` and `getWrappedToken(TOKEN_B)` must return non-zero addresses, and each returned wrapper's `token()` must equal the requested underlying. `initializePool` reverts with `WrappedTokenNotFound` if either check fails. The hook then pins both wrapper addresses; later factory mapping changes do not redirect reserve operations. If the wrappers do not exist yet, call `FewFactory.createToken(TOKEN_A_ADDR)` first.
 
 ### 4. Balance requirements
 
@@ -146,7 +146,7 @@ Swaps can be routed through any V4-compatible router (e.g. a simple direct PoolM
 | Normal swap, pool live, tick inside a bucket | Hook injects JIT liquidity in `beforeSwap`, swap executes against it, hook removes it in `afterSwap`; reserves shift in the direction of the trade |
 | Reverse-direction swap | Same lifecycle; reserves shift the opposite way |
 | Pool paused via `setPoolLive(key, false)` | Swap reverts with `PoolNotLive` — explicit failure for routers |
-| Tick outside all buckets | `beforeSwap` returns `ZERO_DELTA` (no JIT); with no other liquidity in the pool, the swap fails on its own |
+| Tick outside all buckets or zero active reserve | `beforeSwap` reverts with `NoActiveLiquidity` before pool price mutation |
 | Resume via `setPoolLive(key, true)` | JIT service resumes |
 
 After each swap, verify:
@@ -174,7 +174,7 @@ POOL_ID=$(cast keccak $(cast abi-encode \
 cast call $HOOK "getReserves((address,address,uint24,int24,address))(uint256,uint256)" \
   "($C0,$C1,3000,60,$HOOK)" --rpc-url $RPC
 
-# Effective liquidity (equals getReserves for fwToken reserves)
+# Effective liquidity (unredeemable ERC-6909 claims are excluded)
 cast call $HOOK "getEffectiveLiquidity((address,address,uint24,int24,address))(uint256,uint256)" \
   "($C0,$C1,3000,60,$HOOK)" --rpc-url $RPC
 

@@ -25,9 +25,8 @@ abstract contract RingShareBase is Script {
 
     /// @dev Hook permission flags required by `RingShareLiqHook.getHookPermissions`, encoded in
     ///      the low 14 bits of the hook address. `BaseHook.validateHookAddress` enforces the match.
-    uint160 internal constant REQUIRED_HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG
-        | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG
-        | Hooks.AFTER_SWAP_FLAG;
+    uint160 internal constant REQUIRED_HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+        | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG;
 
     function _poolKey(address hook) internal view returns (PoolKey memory key) {
         address tokenA = vm.envAddress("TOKEN_A_ADDR");

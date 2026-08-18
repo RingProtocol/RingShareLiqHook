@@ -4,6 +4,8 @@ pragma solidity ^0.8.24;
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {TransientStateLibrary} from "@uniswap/v4-core/src/libraries/TransientStateLibrary.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 import {ImmutableState} from "./ImmutableState.sol";
 import {ActionConstants} from "../libraries/ActionConstants.sol";
 
@@ -61,8 +63,7 @@ abstract contract DeltaResolver is ImmutableState {
         int256 _amount = poolManager.currencyDelta(address(this), currency);
         // If the amount is positive, it should be taken not settled.
         if (_amount > 0) revert DeltaNotNegative(currency);
-        // Casting is safe due to limits on the total supply of a pool
-        amount = uint256(-_amount);
+        amount = SignedMath.abs(_amount);
     }
 
     /// @notice Obtain the full credit owed to this contract (positive delta)
@@ -72,7 +73,7 @@ abstract contract DeltaResolver is ImmutableState {
         int256 _amount = poolManager.currencyDelta(address(this), currency);
         // If the amount is negative, it should be settled not taken.
         if (_amount < 0) revert DeltaNotPositive(currency);
-        amount = uint256(_amount);
+        amount = SafeCast.toUint256(_amount);
     }
 
     /// @notice Calculates the amount for a settle action

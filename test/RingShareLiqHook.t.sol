@@ -21,6 +21,7 @@ import {PoolClaimsTest} from "@uniswap/v4-core/src/test/PoolClaimsTest.sol";
 import {LiquidityBucket} from "alf/types/Distribution.sol";
 
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
+import {ImmutableState} from "../src/base/ImmutableState.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
 import {IFewWrappedToken} from "../src/interfaces/external/IFewWrappedToken.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -109,6 +110,10 @@ contract MockFewFactory is IFewFactory {
             this.createToken(originalToken);
         }
         return MockFewWrappedToken(wrapped[originalToken]);
+    }
+
+    function setWrapped(address originalToken, address wrappedToken) external {
+        wrapped[originalToken] = wrappedToken;
     }
 }
 
@@ -259,12 +264,51 @@ contract RingShareLiqHookTest is Test {
         new RingShareLiqHook{salt: salt}(manager, 500_000, owner, IFewFactory(address(0)));
     }
 
+    function test_RevertConstruct_ZeroPoolManager() public {
+        vm.expectRevert(ImmutableState.InvalidPoolManager.selector);
+        new RingShareLiqHook(IPoolManager(address(0)), 500_000, owner, fewFactory);
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     //                          POOL INITIALIZATION
     // ══════════════════════════════════════════════════════════════════════
 
     function test_PoolIsLiveAfterBootstrap() public view {
         assertTrue(hook.livePools(poolId));
+        assertEq(PoolId.unwrap(hook.configuredPoolId()), PoolId.unwrap(poolId));
+    }
+
+    function test_RevertInitialize_SecondPool() public {
+        PoolKey memory otherKey = _otherKey();
+        LiquidityBucket[] memory buckets = _oneBucket();
+
+        vm.expectRevert(RingShareLiqHook.PoolAlreadyInitialized.selector);
+        hook.initializePool(
+            otherKey, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: buckets})
+        );
+    }
+
+    function test_RevertInitialize_WrapperUnderlyingMismatch() public {
+        RingShareLiqHook freshHook = _deployFreshHook(500_001);
+        MockFewWrappedToken wrong = new MockFewWrappedToken(Currency.unwrap(currency1));
+        fewFactory.setWrapped(Currency.unwrap(currency0), address(wrong));
+        PoolKey memory freshKey = _keyFor(address(freshHook));
+
+        vm.expectRevert(RingShareLiqHook.WrappedTokenNotFound.selector);
+        freshHook.initializePool(
+            freshKey, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: _oneBucket()})
+        );
+    }
+
+    function test_RevertBootstrap_WithoutActiveLiquidity() public {
+        RingShareLiqHook freshHook = _deployFreshHook(500_002);
+        PoolKey memory freshKey = _keyFor(address(freshHook));
+        freshHook.initializePool(
+            freshKey, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: _oneBucket()})
+        );
+
+        vm.expectRevert(RingShareLiqHook.NoActiveLiquidity.selector);
+        freshHook.bootstrap(freshKey, 0, 0);
     }
 
     function test_RevertInitialize_NotOwner() public {
@@ -312,6 +356,58 @@ contract RingShareLiqHookTest is Test {
         assertEq(r0, 9000 ether);
     }
 
+    function test_WrapperMappingIsPinnedAfterInitialization() public {
+        MockFewWrappedToken replacement = new MockFewWrappedToken(Currency.unwrap(currency0));
+        fewFactory.setWrapped(Currency.unwrap(currency0), address(replacement));
+
+        fwToken0.wrap(100 ether);
+        uint256 before = fwToken0.balanceOf(address(this));
+        hook.deposit(key, currency0, 100 ether);
+        hook.withdraw(key, currency0, 100 ether, address(this));
+
+        assertEq(fwToken0.balanceOf(address(this)), before);
+        assertEq(replacement.balanceOf(address(hook)), 0);
+        assertEq(hook.wrappedTokenOf(currency0), address(fwToken0));
+    }
+
+    function test_RevertDeposit_CurrencyNotInPool() public {
+        Currency foreign = Currency.wrap(address(new MockERC20("foreign", "F", 18)));
+        vm.expectRevert(RingShareLiqHook.CurrencyNotInPool.selector);
+        hook.deposit(key, foreign, 1);
+    }
+
+    function test_RevertManagementAndViews_ForOtherPool() public {
+        PoolKey memory otherKey = _otherKey();
+        PoolId otherId = otherKey.toId();
+
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.bootstrap(otherKey, 0, 0);
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.deposit(otherKey, otherKey.currency0, 1);
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.withdraw(otherKey, otherKey.currency0, 0, address(this));
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.sweepClaims(otherKey);
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.setDistribution(otherKey, _oneBucket());
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.setPoolLive(otherKey, false);
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.getDistribution(otherId);
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.getReserves(otherKey);
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.getEffectiveLiquidity(otherKey);
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.getIndicativeQuote(otherKey, true, -int256(1 ether), "");
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.swapToPrice(otherKey, true, -int256(1 ether), TickMath.MIN_SQRT_PRICE + 1, "");
+
+        vm.prank(address(manager));
+        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
+        hook.unlockCallback(abi.encode(otherKey));
+    }
+
     function test_RevertWithdraw_Insufficient() public {
         vm.expectRevert(RingShareLiqHook.InsufficientReserve.selector);
         hook.withdraw(key, currency0, 100_000 ether, address(this));
@@ -332,9 +428,7 @@ contract RingShareLiqHookTest is Test {
         // check that the call reverts (external LP is blocked by the hook).
         vm.expectRevert();
         modifyLiquidityRouter.modifyLiquidity(
-            key,
-            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: int256(1 ether), salt: 0}),
-            ""
+            key, ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: int256(1 ether), salt: 0}), ""
         );
     }
 
@@ -378,6 +472,25 @@ contract RingShareLiqHookTest is Test {
             swapRouter.swap(key, params, PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}), "");
         // The swap should succeed and produce a non-zero delta
         assertTrue(delta.amount0() != 0 || delta.amount1() != 0);
+    }
+
+    function test_RevertSwap_AfterAllFwReservesWithdrawn() public {
+        hook.withdraw(key, currency0, 10_000 ether, address(this));
+        hook.withdraw(key, currency1, 10_000 ether, address(this));
+        (uint160 beforePrice,,,) = IPoolManager(address(manager)).getSlot0(poolId);
+
+        vm.expectRevert();
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: true, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+
+        (uint160 afterPrice,,,) = IPoolManager(address(manager)).getSlot0(poolId);
+        assertEq(afterPrice, beforePrice);
     }
 
     function test_ReservesChangeAfterSwap() public {
@@ -452,10 +565,74 @@ contract RingShareLiqHookTest is Test {
         assertEq(quote, 0);
     }
 
+    function test_GetIndicativeQuote_ReturnsZeroAcrossDistributionBoundary() public view {
+        bool zeroForOne = currency0 < currency1;
+        uint256 quote = hook.getIndicativeQuote(key, zeroForOne, -int256(10_000 ether), "");
+        assertEq(quote, 0);
+    }
+
+    function test_SwapToPrice_ReturnsZeroForInvalidDirection() public view {
+        (uint160 currentPrice,,,) = IPoolManager(address(manager)).getSlot0(poolId);
+        (uint256 amountIn0, uint256 amountOut0) = hook.swapToPrice(key, true, -int256(1 ether), currentPrice + 1, "");
+        (uint256 amountIn1, uint256 amountOut1) = hook.swapToPrice(key, false, -int256(1 ether), currentPrice - 1, "");
+        assertEq(amountIn0 | amountOut0 | amountIn1 | amountOut1, 0);
+    }
+
     function test_GetEffectiveLiquidity() public view {
         (uint256 eff0, uint256 eff1) = hook.getEffectiveLiquidity(key);
         (uint256 res0, uint256 res1) = hook.getReserves(key);
         assertEq(eff0, res0);
         assertEq(eff1, res1);
+    }
+
+    function test_GetEffectiveLiquidity_CapsUnredeemableClaims() public {
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: true, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+
+        uint256 claims0 = hook.claimReserveOf(poolId, currency0);
+        uint256 claims1 = hook.claimReserveOf(poolId, currency1);
+        Currency claimCurrency = claims0 > 0 ? currency0 : currency1;
+        uint256 claims = claims0 > 0 ? claims0 : claims1;
+        assertGt(claims, 0);
+
+        deal(Currency.unwrap(claimCurrency), address(manager), 0);
+        (uint256 total0, uint256 total1) = hook.getReserves(key);
+        (uint256 effective0, uint256 effective1) = hook.getEffectiveLiquidity(key);
+
+        if (claimCurrency == currency0) {
+            assertEq(total0 - effective0, claims);
+        } else {
+            assertEq(total1 - effective1, claims);
+        }
+    }
+
+    function _deployFreshHook(uint32 maxGas) internal returns (RingShareLiqHook freshHook) {
+        bytes memory creationCode = type(RingShareLiqHook).creationCode;
+        bytes memory args = abi.encode(address(manager), maxGas, owner, IFewFactory(address(fewFactory)));
+        (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
+        freshHook = new RingShareLiqHook{salt: salt}(manager, maxGas, owner, fewFactory);
+    }
+
+    function _keyFor(address targetHook) internal view returns (PoolKey memory) {
+        return
+            PoolKey({currency0: currency0, currency1: currency1, fee: 3000, tickSpacing: 60, hooks: IHooks(targetHook)});
+    }
+
+    function _otherKey() internal view returns (PoolKey memory) {
+        return
+            PoolKey({
+                currency0: currency0, currency1: currency1, fee: 500, tickSpacing: 10, hooks: IHooks(address(hook))
+            });
+    }
+
+    function _oneBucket() internal pure returns (LiquidityBucket[] memory buckets) {
+        buckets = new LiquidityBucket[](1);
+        buckets[0] = LiquidityBucket({tickLower: -60, tickUpper: 60, weightBps: 10_000});
     }
 }

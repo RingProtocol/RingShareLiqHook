@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -32,6 +33,7 @@ import {RingShareBase} from "./base/RingShareBase.sol";
 ///   forge script scripts/TestSwap.s.sol:TestSwap \
 ///     --rpc-url http://127.0.0.1:8545 --private-key $ANVIL_KEY --broadcast -vv
 contract TestSwap is RingShareBase {
+    using SafeCast for uint256;
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -57,7 +59,7 @@ contract TestSwap is RingShareBase {
             key,
             SwapParams({
                 zeroForOne: zeroForOne,
-                amountSpecified: -int256(amountIn),
+                amountSpecified: -amountIn.toInt256(),
                 sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),

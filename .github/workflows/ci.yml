@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  foundry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout fixed dependencies
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.5.1
+
+      - name: Check formatting
+        run: forge fmt --check
+
+      - name: Build production contracts and enforce size limits
+        run: forge build --sizes --skip test
+
+      - name: Build the Sepolia profile
+        run: FOUNDRY_PROFILE=sepolia forge build --sizes --skip test
+
+      - name: Lint medium and high severity findings
+        run: forge lint src scripts test --severity high med
+
+      - name: Run unit, fuzz, and invariant tests
+        env:
+          FOUNDRY_INVARIANT_FAIL_ON_REVERT: "true"
+        run: forge test --offline --threads 1

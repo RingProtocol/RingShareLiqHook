@@ -13,6 +13,9 @@ contract ImmutableState is IImmutableState {
     /// @notice Thrown when the caller is not PoolManager
     error NotPoolManager();
 
+    /// @notice Thrown when deployment does not provide a PoolManager.
+    error InvalidPoolManager();
+
     /// @notice Only allow calls from the PoolManager contract
     modifier onlyPoolManager() {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
@@ -20,6 +23,7 @@ contract ImmutableState is IImmutableState {
     }
 
     constructor(IPoolManager _poolManager) {
+        if (address(_poolManager) == address(0)) revert InvalidPoolManager();
         poolManager = _poolManager;
     }
 }

@@ -20,7 +20,6 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/type
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {TransientStateLibrary} from "@uniswap/v4-core/src/libraries/TransientStateLibrary.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
-import {SqrtPriceMath} from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";
 import {SwapMath} from "@uniswap/v4-core/src/libraries/SwapMath.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 
@@ -73,14 +72,14 @@ import {IFewFactory} from "../interfaces/external/IFewFactory.sol";
 ///     initial price; `bootstrap` seeds the reserve and flips liveness on; `setDistribution` updates
 ///     tradable ranges; `setPoolLive` pauses/resumes.
 ///
-///   - **One open JIT cycle at a time.** The `JITLock` transient lock rejects reentrant cycles.
-///     Since the hook serves a single pool, cross-pool nesting is structurally impossible.
+///   - **One open JIT cycle at a time.** The `JITLock` transient lock rejects both same-pool and
+///     global reentrant cycles before token or PoolManager callbacks can overlap settlement.
 ///
 ///   - **Claims, never opportunistic `take`.** A positive delta always becomes ERC-6909 claims,
 ///     redeemed at the start of the next cycle or via `sweepClaims`.
 ///
-///   - **Price-manipulation guard.** The pool's current tick must fall inside one of the configured
-///     buckets or the hook does not intervene at all.
+///   - **Price-manipulation guard.** The pool's current reserves must produce non-zero active
+///     liquidity at the current tick or `beforeSwap` reverts before price mutation.
 ///
 ///   - **Owner model.** OZ `Ownable2Step` (via `OwnedALFHook`), per-pool `setPoolLive`, and
 ///     owner-gated pool initialization, deposits and withdrawals. Every configuration and
@@ -148,6 +147,15 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     ///         `factory()` against the known factory address.
     address public immutable factory;
 
+    /// @notice The only pool this hook may serve. Set once by {initializePool}.
+    PoolId public configuredPoolId;
+
+    /// @notice Whether the single pool has been initialized.
+    bool public initialized;
+
+    /// @notice The fwToken fixed for each underlying currency at initialization.
+    mapping(Currency currency => address fwToken) public wrappedTokenOf;
+
     /// @notice Pool-owned fwToken reserve, keyed by the pool's *underlying* currency.
     mapping(PoolId => mapping(Currency => uint256)) public fwReserveOf;
 
@@ -188,13 +196,16 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     error NativeNotSupported();
     error WrappedTokenNotFound();
     error InsufficientReserve();
-    error TransferFailed();
     error UnauthorizedCallback();
     error LiquidityNotAllowed();
     error InvalidHookAddress();
     error DynamicFeeNotSupported();
     error PoolAlreadyBootstrapped();
+    error PoolAlreadyInitialized();
     error BootstrapIncomplete();
+    error InvalidPool();
+    error CurrencyNotInPool();
+    error NoActiveLiquidity();
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                              CONSTRUCTOR
@@ -235,25 +246,25 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     ///               dynamic-fee pools are rejected.
     /// @param config Pool configuration including distribution and initial sqrt price.
     /// @return tick  The initial tick assigned by the PoolManager.
-    function initializePool(PoolKey calldata key, PoolConfig calldata config)
-        external
-        onlyOwner
-        returns (int24 tick)
-    {
+    function initializePool(PoolKey calldata key, PoolConfig calldata config) external onlyOwner returns (int24 tick) {
+        if (initialized) revert PoolAlreadyInitialized();
         if (key.hooks != IHooks(address(this))) revert InvalidHookAddress();
         if (key.currency0.isAddressZero() || key.currency1.isAddressZero()) revert NativeNotSupported();
         if (key.fee.isDynamicFee()) revert DynamicFeeNotSupported();
 
-        // Verify fwTokens exist for both currencies before creating the pool.
-        if (fewFactory.getWrappedToken(Currency.unwrap(key.currency0)) == address(0)) revert WrappedTokenNotFound();
-        if (fewFactory.getWrappedToken(Currency.unwrap(key.currency1)) == address(0)) revert WrappedTokenNotFound();
+        address fwToken0 = _resolveWrappedToken(key.currency0);
+        address fwToken1 = _resolveWrappedToken(key.currency1);
 
-        PoolId poolId = key.toId();
-        _distribution.set(poolId, config.distribution, key.tickSpacing);
+        PoolId id = key.toId();
+        initialized = true;
+        configuredPoolId = id;
+        wrappedTokenOf[key.currency0] = fwToken0;
+        wrappedTokenOf[key.currency1] = fwToken1;
+        _distribution.set(id, config.distribution, key.tickSpacing);
 
         tick = poolManager.initialize(key, config.sqrtPriceX96);
         // Pool starts not live: liveness is gated on `bootstrap`.
-        emit PoolCreated(poolId);
+        emit PoolCreated(id);
     }
 
     /// @notice Seed the pool's reserve with fwTokens and flip it to live.
@@ -269,14 +280,15 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         nonReentrant
         whenJITNotInProgress
     {
-        PoolId poolId = key.toId();
-        if (_liveness.isLive(poolId)) revert PoolAlreadyBootstrapped();
+        PoolId id = key.toId();
+        _requirePool(id);
+        if (_liveness.isLive(id)) revert PoolAlreadyBootstrapped();
 
-        if (amount0 > 0) _pullFwToken(key.currency0, amount0, poolId);
-        if (amount1 > 0) _pullFwToken(key.currency1, amount1, poolId);
+        if (amount0 > 0) _pullFwToken(key.currency0, amount0, id);
+        if (amount1 > 0) _pullFwToken(key.currency1, amount1, id);
 
-        // First successful bootstrap flips the pool to live.
-        _liveness.setLive(poolId, true);
+        _requireActiveLiquidity(key, id);
+        _liveness.setLive(id, true);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -293,7 +305,9 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         nonReentrant
         whenJITNotInProgress
     {
-        _pullFwToken(currency, amount, key.toId());
+        PoolId id = key.toId();
+        _requirePool(id);
+        _pullFwToken(currency, amount, id);
     }
 
     /// @notice Withdraw a pool's fwToken reserve.
@@ -306,21 +320,22 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     {
         if (to == address(0)) revert NativeNotSupported();
 
-        PoolId poolId = key.toId();
-        uint256 fw = fwReserveOf[poolId][currency];
+        PoolId id = key.toId();
+        _requirePool(id);
+        address fwToken = _wrappedToken(currency);
+        uint256 fw = fwReserveOf[id][currency];
         if (fw < amount) revert InsufficientReserve();
-        fwReserveOf[poolId][currency] = fw - amount;
+        fwReserveOf[id][currency] = fw - amount;
 
-        address fwToken = fewFactory.getWrappedToken(Currency.unwrap(currency));
-        if (fwToken == address(0)) revert WrappedTokenNotFound();
-        if (!IERC20(fwToken).transfer(to, amount)) revert TransferFailed();
+        IERC20(fwToken).safeTransfer(to, amount);
 
-        emit Withdrawn(poolId, currency, to, amount);
+        emit Withdrawn(id, currency, to, amount);
     }
 
     /// @notice Convert the pool's outstanding ERC-6909 claims back into its fwToken reserve.
     /// @dev Claims are only redeemable inside a PoolManager unlock, so this opens one.
     function sweepClaims(PoolKey calldata key) external onlyOwner nonReentrant whenJITNotInProgress {
+        _requirePool(key.toId());
         poolManager.unlock(abi.encode(key));
         emit ClaimsSwept(key.toId());
     }
@@ -331,12 +346,13 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         if (msg.sender != address(poolManager)) revert UnauthorizedCallback();
         PoolKey memory key = abi.decode(data, (PoolKey));
-        PoolId poolId = key.toId();
+        PoolId id = key.toId();
+        _requirePool(id);
 
-        _redeemClaims(poolId, key.currency0);
-        _redeemClaims(poolId, key.currency1);
-        _wrapReserve(poolId, key.currency0);
-        _wrapReserve(poolId, key.currency1);
+        _redeemClaims(id, key.currency0);
+        _redeemClaims(id, key.currency1);
+        _wrapReserve(id, key.currency0);
+        _wrapReserve(id, key.currency1);
 
         return "";
     }
@@ -353,14 +369,19 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         onlyOwner
         whenJITNotInProgress
     {
-        _distribution.set(key.toId(), buckets, key.tickSpacing);
-        emit DistributionUpdated(key.toId());
+        PoolId id = key.toId();
+        _requirePool(id);
+        _distribution.set(id, buckets, key.tickSpacing);
+        emit DistributionUpdated(id);
     }
 
     /// @notice Enable or disable pool liveness for emergency pause/resume.
     /// @dev    When toggled to false, `_beforeSwap` reverts with `PoolNotLive`, pausing the pool.
     function setPoolLive(PoolKey calldata key, bool live) external onlyOwner whenJITNotInProgress {
-        _liveness.setLive(key.toId(), live);
+        PoolId id = key.toId();
+        _requirePool(id);
+        if (live) _requireActiveLiquidity(key, id);
+        _liveness.setLive(id, live);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -368,45 +389,49 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// @notice The current liquidity distribution for the pool.
-    function getDistribution(PoolId poolId) external view returns (LiquidityBucket[] memory) {
-        return _distribution.get(poolId);
+    function getDistribution(PoolId id) external view returns (LiquidityBucket[] memory) {
+        _requirePool(id);
+        return _distribution.get(id);
     }
 
     /// @notice Total reserves managed by this hook for the pool (fwToken + raw + claims).
     function getReserves(PoolKey calldata key) external view override returns (uint256 token0, uint256 token1) {
-        PoolId poolId = key.toId();
-        token0 = fwReserveOf[poolId][key.currency0] + rawReserveOf[poolId][key.currency0]
-            + claimReserveOf[poolId][key.currency0];
-        token1 = fwReserveOf[poolId][key.currency1] + rawReserveOf[poolId][key.currency1]
-            + claimReserveOf[poolId][key.currency1];
+        PoolId id = key.toId();
+        _requirePool(id);
+        token0 = _totalReserve(id, key.currency0);
+        token1 = _totalReserve(id, key.currency1);
     }
 
-    /// @notice Assets available for immediate swapping. For fwToken reserves this equals
-    ///         `getReserves` since fwTokens can be unwrapped at will (no vault utilization cap).
+    /// @notice Assets available for immediate swapping. fwTokens can be unwrapped at will;
+    ///         ERC-6909 claims are capped at the PoolManager's current physical token balance.
     function getEffectiveLiquidity(PoolKey calldata key)
         external
         view
         override
         returns (uint256 token0, uint256 token1)
     {
-        return this.getReserves(key);
+        PoolId id = key.toId();
+        _requirePool(id);
+        token0 = _effectiveReserve(id, key.currency0);
+        token1 = _effectiveReserve(id, key.currency1);
     }
 
-    /// @notice Indicative quote against hypothetical JIT liquidity.
-    /// @dev Uses current active distribution-bucket liquidity for a compact view quote.
-    ///      The result is an upper bound fit for ranking, not a precise execution prediction.
+    /// @notice Conservative indicative quote against hypothetical JIT liquidity.
+    /// @dev Returns zero when the request cannot be filled inside the current liquidity segment.
+    ///      Routers must not extrapolate the current liquidity across a distribution boundary.
     function getIndicativeQuote(PoolKey calldata key, bool zeroForOne, int256 amountSpecified, bytes calldata)
         external
         view
         override
         returns (uint256 outputAmount)
     {
+        _requirePool(key.toId());
         uint160 limit = zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1;
         (uint256 amountIn, uint256 amountOut) = _simulateIndicative(key, zeroForOne, amountSpecified, limit);
         if (amountSpecified < 0) {
             outputAmount = amountOut;
         } else {
-            outputAmount = amountOut >= uint256(amountSpecified) ? amountIn : 0;
+            outputAmount = amountOut >= SafeCast.toUint256(amountSpecified) ? amountIn : 0;
         }
     }
 
@@ -418,6 +443,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         uint160 sqrtPriceLimitX96,
         bytes calldata
     ) external view override returns (uint256 amountIn, uint256 amountOut) {
+        _requirePool(key.toId());
         return _simulateIndicative(key, zeroForOne, amountSpecified, sqrtPriceLimitX96);
     }
 
@@ -482,41 +508,41 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        PoolId poolId = key.toId();
-        _liveness.requireLive(poolId);
+        PoolId id = key.toId();
+        _requirePool(id);
+        _liveness.requireLive(id);
 
-        LiquidityBucket[] memory buckets = _distribution.get(poolId);
-        if (buckets.length == 0) return _noJIT();
+        LiquidityBucket[] memory buckets = _distribution.get(id);
 
-        (uint160 sqrtPriceX96, int24 tick,,) = poolManager.getSlot0(poolId);
+        (uint160 sqrtPriceX96, int24 tick,,) = poolManager.getSlot0(id);
+        (uint256 bal0, uint256 bal1) = _effectiveReserves(id, key);
+        if (activeLiquidity(buckets, sqrtPriceX96, tick, bal0, bal1) == 0) revert NoActiveLiquidity();
 
-        // Price-manipulation guard: only serve the tradable ranges the owner configured.
-        if (!_tickCovered(buckets, tick)) return _noJIT();
-
-        jitLockFor(poolId).enter();
-        _deployJIT(poolId, key, buckets, sqrtPriceX96);
+        jitLockFor(id).enter();
+        _deployJIT(id, key, buckets, sqrtPriceX96);
 
         return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
     /// @dev JIT teardown. Removes all bucket positions, resolves the hook's net delta for both
     ///      currencies, wraps leftover raw balance back into fwToken reserve, and clears the lock.
-    ///      If `_beforeSwap` declined to intervene (no lock set), there is nothing to unwind.
+    ///      The lock check is defensive: a successful `beforeSwap` always enters before deployment.
     function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
         internal
         override
         returns (bytes4, int128)
     {
-        PoolId poolId = key.toId();
-        if (!_isJITLocked(poolId)) return (IHooks.afterSwap.selector, 0);
+        PoolId id = key.toId();
+        _requirePool(id);
+        if (!_isJITLocked(id)) return (IHooks.afterSwap.selector, 0);
 
-        _removeJIT(poolId, key);
-        _resolveCurrency(poolId, key.currency0);
-        _resolveCurrency(poolId, key.currency1);
-        _wrapReserve(poolId, key.currency0);
-        _wrapReserve(poolId, key.currency1);
+        _removeJIT(id, key);
+        _resolveCurrency(id, key.currency0);
+        _resolveCurrency(id, key.currency1);
+        _wrapReserve(id, key.currency0);
+        _wrapReserve(id, key.currency1);
 
-        jitLockFor(poolId).clear();
+        jitLockFor(id).clear();
         return (IHooks.afterSwap.selector, 0);
     }
 
@@ -601,7 +627,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     function _resolveCurrency(PoolId poolId, Currency currency) internal {
         int256 delta = poolManager.currencyDelta(address(this), currency);
         if (delta > 0) {
-            uint256 credit = uint256(delta);
+            uint256 credit = SafeCast.toUint256(delta);
             poolManager.mint(address(this), currency.toId(), credit);
             claimReserveOf[poolId][currency] += credit;
         } else if (delta < 0) {
@@ -650,8 +676,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     /// @dev Pull fwToken from the caller and credit it to the pool's fwToken reserve.
     function _pullFwToken(Currency currency, uint256 amount, PoolId poolId) internal {
         if (amount == 0) return;
-        address fwToken = fewFactory.getWrappedToken(Currency.unwrap(currency));
-        if (fwToken == address(0)) revert WrappedTokenNotFound();
+        address fwToken = _wrappedToken(currency);
 
         uint256 before = IERC20(fwToken).balanceOf(address(this));
         IERC20(fwToken).safeTransferFrom(msg.sender, address(this), amount);
@@ -668,8 +693,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         uint256 toUnwrap = amount < fw ? amount : fw;
         if (toUnwrap == 0) return;
 
-        address fwToken = fewFactory.getWrappedToken(Currency.unwrap(currency));
-        if (fwToken == address(0)) revert WrappedTokenNotFound();
+        address fwToken = _wrappedToken(currency);
 
         uint256 before = currency.balanceOf(address(this));
         IFewWrappedToken(fwToken).unwrap(toUnwrap);
@@ -684,8 +708,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         uint256 raw = rawReserveOf[poolId][currency];
         if (raw == 0) return;
 
-        address fwToken = fewFactory.getWrappedToken(Currency.unwrap(currency));
-        if (fwToken == address(0)) return;
+        address fwToken = _wrappedToken(currency);
 
         uint256 held = currency.balanceOf(address(this));
         uint256 toWrap = raw < held ? raw : held;
@@ -718,57 +741,105 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         int256 amountSpecified,
         uint160 sqrtPriceLimitX96
     ) internal view returns (uint256 amountIn, uint256 amountOut) {
-        PoolId poolId = key.toId();
+        PoolId id = key.toId();
+        _requirePool(id);
 
-        if (!_liveness.isLive(poolId)) return (0, 0);
+        if (!_liveness.isLive(id)) return (0, 0);
         uint24 feePips = key.fee;
 
-        (uint256 bal0, uint256 bal1) = this.getReserves(key);
+        (uint256 bal0, uint256 bal1) = _effectiveReserves(id, key);
         if (bal0 == 0 && bal1 == 0) return (0, 0);
 
         uint160 sqrtPriceX96;
         int24 currentTick;
         {
             uint24 protocolFee;
-            (sqrtPriceX96, currentTick, protocolFee,) = poolManager.getSlot0(poolId);
+            (sqrtPriceX96, currentTick, protocolFee,) = poolManager.getSlot0(id);
             if (sqrtPriceX96 == 0) return (0, 0);
+            if (zeroForOne
+                    ? sqrtPriceLimitX96 >= sqrtPriceX96 || sqrtPriceLimitX96 <= TickMath.MIN_SQRT_PRICE
+                    : sqrtPriceLimitX96 <= sqrtPriceX96 || sqrtPriceLimitX96 >= TickMath.MAX_SQRT_PRICE) return (0, 0);
             feePips = FeeLib.effectiveSwapFee(feePips, protocolFee, zeroForOne);
         }
 
-        uint128 liquidity = activeLiquidity(_distribution.get(poolId), sqrtPriceX96, currentTick, bal0, bal1);
+        LiquidityBucket[] memory buckets = _distribution.get(id);
+        uint128 liquidity = activeLiquidity(buckets, sqrtPriceX96, currentTick, bal0, bal1);
         if (liquidity == 0 || amountSpecified == 0) return (0, 0);
 
+        (uint160 target, bool clipped) = _segmentTarget(buckets, currentTick, zeroForOne, sqrtPriceLimitX96);
         (, uint256 stepIn, uint256 stepOut, uint256 feeAmount) =
-            SwapMath.computeSwapStep(sqrtPriceX96, sqrtPriceLimitX96, liquidity, amountSpecified, feePips);
+            SwapMath.computeSwapStep(sqrtPriceX96, target, liquidity, amountSpecified, feePips);
         amountIn = stepIn + feeAmount;
         amountOut = stepOut;
 
-        // Cap output at the deliverable reserve so the quote stays an honest upper bound.
+        uint256 specified = SignedMath.abs(amountSpecified);
+        if (clipped && (amountSpecified < 0 ? amountIn < specified : amountOut < specified)) return (0, 0);
+
         uint256 outReserve = zeroForOne ? bal1 : bal0;
-        if (amountOut > outReserve) {
-            uint160 drainLimit = zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1;
-            (, uint256 drainIn,, uint256 drainFee) =
-                SwapMath.computeSwapStep(sqrtPriceX96, drainLimit, liquidity, outReserve.toInt256(), feePips);
-            amountIn = drainIn + drainFee;
-            amountOut = outReserve;
-        }
+        if (amountOut > outReserve) return (0, 0);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                        INTERNAL: HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @dev Whether the current tick sits inside one of the configured tradable ranges.
-    function _tickCovered(LiquidityBucket[] memory buckets, int24 tick) internal pure returns (bool) {
+    function _segmentTarget(LiquidityBucket[] memory buckets, int24 tick, bool zeroForOne, uint160 limit)
+        private
+        pure
+        returns (uint160 target, bool clipped)
+    {
+        int24 boundary = zeroForOne ? TickMath.MIN_TICK : TickMath.MAX_TICK;
         uint256 n = buckets.length;
         for (uint256 i; i < n; ++i) {
-            if (tick >= buckets[i].tickLower && tick < buckets[i].tickUpper) return true;
+            if (zeroForOne) {
+                if (buckets[i].tickLower <= tick && buckets[i].tickLower > boundary) boundary = buckets[i].tickLower;
+                if (buckets[i].tickUpper <= tick && buckets[i].tickUpper > boundary) boundary = buckets[i].tickUpper;
+            } else {
+                if (buckets[i].tickLower > tick && buckets[i].tickLower < boundary) boundary = buckets[i].tickLower;
+                if (buckets[i].tickUpper > tick && buckets[i].tickUpper < boundary) boundary = buckets[i].tickUpper;
+            }
         }
-        return false;
+        uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(boundary);
+        target = SwapMath.getSqrtPriceTarget(zeroForOne, boundaryPrice, limit);
+        clipped = target != limit;
     }
 
-    function _noJIT() private pure returns (bytes4, BeforeSwapDelta, uint24) {
-        return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+    function _resolveWrappedToken(Currency currency) private view returns (address fwToken) {
+        address token = Currency.unwrap(currency);
+        fwToken = fewFactory.getWrappedToken(token);
+        if (fwToken == address(0) || IFewWrappedToken(fwToken).token() != token) revert WrappedTokenNotFound();
+    }
+
+    function _wrappedToken(Currency currency) private view returns (address fwToken) {
+        fwToken = wrappedTokenOf[currency];
+        if (fwToken == address(0)) revert CurrencyNotInPool();
+    }
+
+    function _requirePool(PoolId id) private view {
+        if (!initialized || PoolId.unwrap(id) != PoolId.unwrap(configuredPoolId)) revert InvalidPool();
+    }
+
+    function _totalReserve(PoolId id, Currency currency) private view returns (uint256) {
+        return fwReserveOf[id][currency] + rawReserveOf[id][currency] + claimReserveOf[id][currency];
+    }
+
+    function _effectiveReserve(PoolId id, Currency currency) private view returns (uint256 available) {
+        available = fwReserveOf[id][currency] + rawReserveOf[id][currency];
+        uint256 claims = claimReserveOf[id][currency];
+        uint256 managerBalance = currency.balanceOf(address(poolManager));
+        available += claims < managerBalance ? claims : managerBalance;
+    }
+
+    function _effectiveReserves(PoolId id, PoolKey calldata key) private view returns (uint256, uint256) {
+        return (_effectiveReserve(id, key.currency0), _effectiveReserve(id, key.currency1));
+    }
+
+    function _requireActiveLiquidity(PoolKey calldata key, PoolId id) private view {
+        (uint160 sqrtPriceX96, int24 tick,,) = poolManager.getSlot0(id);
+        (uint256 bal0, uint256 bal1) = _effectiveReserves(id, key);
+        if (activeLiquidity(_distribution.get(id), sqrtPriceX96, tick, bal0, bal1) == 0) {
+            revert NoActiveLiquidity();
+        }
     }
 
     /// @dev Whether the JIT lock is set for `poolId`. Reads the per-pool transient slot that

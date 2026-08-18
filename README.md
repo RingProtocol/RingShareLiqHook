@@ -1,9 +1,12 @@
-# hooks
+# Ring Share Liquidity Hook
 
 `RingShareLiqHook` lends a pool's own FewToken reserve to its Uniswap V4 pool as JIT liquidity for
 the duration of each swap. Each hook instance is deployed via `AllowlistedFactory` and serves
 exactly one pool, configured through `initializePool` + `bootstrap`; reserve accounting is isolated
 per hook, and this repository does not implement a global cross-pool capital pool.
+
+The contract is pre-production: it has not completed an independent audit, the current bytecode is
+not deployed, and Uniswap routing/discovery has not been verified.
 
 ## Build and test
 
@@ -12,6 +15,10 @@ git submodule update --init --recursive
 forge build
 forge test
 ```
+
+The three dependencies are committed as fixed gitlinks, so the commands above reproduce the
+reviewed dependency versions. CI runs formatting, production and Sepolia builds with size checks,
+medium/high lint, unit tests, fuzz tests, and invariants.
 
 ## Deployment scripts
 
@@ -33,5 +40,5 @@ variables.
 - [Hook introduction and design](docs/ringshareliqhook.md)
 - [Sepolia deployment & testing guide](docs/sepolia-test-guide.md)
 - [Beginner's guide](docs/tutorial.md)
-- [Sepolia acceptance record — current contract](docs/sepolia-test-record-2.md)
+- [Historical Sepolia acceptance record — pre-hardening bytecode](docs/sepolia-test-record-2.md)
 - [Sepolia acceptance record (earlier codebase revision)](docs/sepolia-test-record.md)

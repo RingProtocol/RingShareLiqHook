@@ -16,7 +16,7 @@ A traditional DEX pool needs someone to lock capital in it long-term as liquidit
 
 **In one sentence: the FewToken reserve assigned to a pool is temporarily "lent" to that pool while a trade passes through, and taken back as soon as the trade ends — it never has to sit in an LP position long-term.**
 
-Each hook instance serves **exactly one pool**, and only the hook's owner can supply capital — there are no outside LPs. Hooks are created through an allowlisted factory, so routers and aggregators can verify on-chain that a hook is a genuine, unmodified deployment.
+Each hook instance serves **exactly one pool**, and only the hook's owner can supply capital — there are no outside LPs. Hooks are created through a Ring allowlisted factory, so routers and aggregators can verify that deployment against a fixed Ring build. This provenance does not imply Uniswap review, routing support, or endorsement.
 
 ---
 
@@ -59,7 +59,7 @@ Think of a "pop-up stall" versus a "permanent shop":
 ### Non-intervention and failure boundaries
 
 - **Pool paused or never bootstrapped** → the swap reverts with an explicit error, so routers know immediately not to route through this pool.
-- **Price outside all configured ranges, or no ranges configured** → the hook simply stays out. Since this pool's only liquidity is the hook's, the swap then fails on its own for lack of depth.
+- **Price outside all configured ranges, or no active reserve liquidity** → `beforeSwap` reverts with `NoActiveLiquidity` before the pool price can change.
 - **If a JIT cycle has already started** and any later step fails (unwrap, liquidity modification, settlement, wrap), the entire swap rolls back atomically — nothing is left half-done.
 
 ---
@@ -139,7 +139,7 @@ After deployment, the pool accepts normal swaps and the hook automatically injec
 ## 8. FAQ
 
 **Q: If the hook doesn't intervene, does the swap fail?**
-A: It depends why. A paused pool reverts the swap explicitly. An out-of-range price means the hook stays out — and since the pool's only liquidity is the hook's JIT liquidity, the swap then fails for lack of depth. Either way, funds are safe: failed swaps revert atomically.
+A: It depends why. A paused pool reverts with `PoolNotLive`. An out-of-range or empty-reserve pool reverts with `NoActiveLiquidity`. Both checks happen before the PoolManager swap, so the price and reserve state remain unchanged.
 
 **Q: Can the reserve be "used up"?**
 A: The reserve is not deducted like a quota — capital is withdrawn after every swap. But persistent one-way flow can convert one side entirely into the other token, requiring the owner to rebalance manually.
