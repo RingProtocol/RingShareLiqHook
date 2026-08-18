@@ -86,7 +86,7 @@ When the hook is owed tokens (positive delta), it always mints ERC-6909 claims r
 
 **5. Transient storage for JIT state.**
 
-All per-cycle state (JIT lock, active liquidity per bucket) uses EIP-1153 transient storage — zero storage cost outside the transaction, no stale state between cycles. `JITLock.enter` checks both its per-pool slot and a global in-flight slot, so a token callback cannot start another JIT cycle before the first one settles.
+All per-cycle state (JIT lock, active liquidity per bucket) uses EIP-1153 transient storage — zero storage cost outside the transaction, no stale state between cycles. The upstream `JITLock` rejects same-pool reentry, the permanent single-pool binding rejects every other pool, and its global counter keeps owner operations out of an active cycle.
 
 ## Owner API
 

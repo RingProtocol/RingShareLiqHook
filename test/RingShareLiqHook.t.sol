@@ -21,7 +21,6 @@ import {PoolClaimsTest} from "@uniswap/v4-core/src/test/PoolClaimsTest.sol";
 import {LiquidityBucket} from "alf/types/Distribution.sol";
 
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
-import {ImmutableState} from "../src/base/ImmutableState.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
 import {IFewWrappedToken} from "../src/interfaces/external/IFewWrappedToken.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -265,8 +264,11 @@ contract RingShareLiqHookTest is Test {
     }
 
     function test_RevertConstruct_ZeroPoolManager() public {
-        vm.expectRevert(ImmutableState.InvalidPoolManager.selector);
-        new RingShareLiqHook(IPoolManager(address(0)), 500_000, owner, fewFactory);
+        bytes memory creationCode = type(RingShareLiqHook).creationCode;
+        bytes memory args = abi.encode(address(0), uint32(500_000), owner, IFewFactory(address(fewFactory)));
+        (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
+        vm.expectRevert(RingShareLiqHook.InvalidPoolManager.selector);
+        new RingShareLiqHook{salt: salt}(IPoolManager(address(0)), 500_000, owner, fewFactory);
     }
 
     // ══════════════════════════════════════════════════════════════════════

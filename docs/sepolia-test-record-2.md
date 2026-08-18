@@ -1,7 +1,7 @@
 # Ring Share Liquidity — Historical Sepolia Acceptance Record 2
 
 > Historical evidence only. The run did not record a source commit or runtime bytecode hash and
-> predates the single-pool, wrapper-identity, global-lock, and zero-active-liquidity hardening.
+> predates the single-pool, wrapper-identity, and zero-active-liquidity hardening.
 > None of the addresses below represents the current review candidate. A new factory, hook, pool,
 > runtime hash, and router-swap record are required before citing Sepolia evidence externally.
 

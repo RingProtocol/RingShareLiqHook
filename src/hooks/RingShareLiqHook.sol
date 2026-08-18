@@ -72,8 +72,9 @@ import {IFewFactory} from "../interfaces/external/IFewFactory.sol";
 ///     initial price; `bootstrap` seeds the reserve and flips liveness on; `setDistribution` updates
 ///     tradable ranges; `setPoolLive` pauses/resumes.
 ///
-///   - **One open JIT cycle at a time.** The `JITLock` transient lock rejects both same-pool and
-///     global reentrant cycles before token or PoolManager callbacks can overlap settlement.
+///   - **One open JIT cycle at a time.** The upstream `JITLock` transient lock rejects same-pool
+///     reentry. This hook's permanent single-pool binding rejects every other pool, while the
+///     upstream global counter blocks owner operations until the active cycle settles.
 ///
 ///   - **Claims, never opportunistic `take`.** A positive delta always becomes ERC-6909 claims,
 ///     redeemed at the start of the next cycle or via `sweepClaims`.
@@ -194,6 +195,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     // ═══════════════════════════════════════════════════════════════════════════
 
     error NativeNotSupported();
+    error InvalidPoolManager();
     error WrappedTokenNotFound();
     error InsufficientReserve();
     error UnauthorizedCallback();
@@ -218,6 +220,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     constructor(IPoolManager _pm, uint32 maxGas_, address owner_, IFewFactory _fewFactory)
         OwnedALFHook(_pm, maxGas_, owner_)
     {
+        if (address(_pm) == address(0)) revert InvalidPoolManager();
         if (address(_fewFactory) == address(0)) revert WrappedTokenNotFound();
         fewFactory = _fewFactory;
         factory = msg.sender;
