@@ -6,7 +6,7 @@ libs = ["lib"]
 evm_version = "cancun"
 via-ir = true
 optimizer = true
-optimizer_runs = 44444444
+optimizer_runs = 1
 
 remappings = [
     "@uniswap/v4-core/=lib/v4-core/",
@@ -17,7 +17,16 @@ remappings = [
     "alf/=src/alf/"
 ]
 
-# The Sepolia deployment evidence was produced with this compiler. Keep the default profile on
-# auto-detection because v4-core's PoolManager tests require their exact 0.8.26 pragma.
 [profile.sepolia]
-solc_version = "0.8.33"
+solc_version = "0.8.26"
+
+[fuzz]
+runs = 256
+
+[invariant]
+runs = 256
+depth = 500
+
+[fmt]
+line_length = 120
+tab_width = 4

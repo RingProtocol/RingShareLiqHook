@@ -1,13 +1,13 @@
-# Ring Share Liquidity — Sepolia Acceptance Record 2 (current contract)
+# Ring Share Liquidity — Historical Sepolia Acceptance Record 2
 
-> This record covers the **current single-pool contract** in `src/` (factory-deployed,
-> `Ownable2Step`, hook-only liquidity, flags `0x2AC0`). It supersedes
-> [sepolia-test-record.md](./sepolia-test-record.md), which documents an earlier multi-pool
-> revision of the codebase.
+> Historical evidence only. The run did not record a source commit or runtime bytecode hash and
+> predates the single-pool, wrapper-identity, and zero-active-liquidity hardening.
+> None of the addresses below represents the current review candidate. A new factory, hook, pool,
+> runtime hash, and router-swap record are required before citing Sepolia evidence externally.
 
 ## Conclusion
 
-On 2026-08-17, the current `RingShareLiqHook` completed an end-to-end run on Ethereum Sepolia with freshly deployed isolated test tokens: factory deployment, CREATE2 hook deployment with salt-mined permission flags, pool initialization with a laddered distribution, bootstrap of reserves, and real swaps in both directions through a `PoolSwapTest` router. All transactions succeeded, and the resulting state was independently re-read via `cast` (not just the scripts' own logs).
+On 2026-08-17, a pre-hardening `RingShareLiqHook` build completed an end-to-end run on Ethereum Sepolia with freshly deployed isolated test tokens: factory deployment, CREATE2 hook deployment with salt-mined permission flags, pool initialization with a laddered distribution, bootstrap of reserves, and swaps in both directions through a `PoolSwapTest` router. All transactions succeeded, and the resulting state was independently re-read via `cast`.
 
 This is a testnet technical acceptance. It does not represent production readiness, a profitable economic model, or a completed security audit.
 
@@ -19,7 +19,7 @@ This is a testnet technical acceptance. It does not represent production readine
 | Run block range | ~`11508509` – `11508531` |
 | Deployer / hook owner | `0x87555dd0e101817c1bc7867e32451b080C55f596` |
 | Compiler profile | default (**solc `0.8.26`** — see deviation note below) |
-| EVM / optimizer | Cancun / via-IR / 44,444,444 runs |
+| EVM / optimizer | Cancun / via-IR / 44,444,444 runs (historical build) |
 | Hook flags | `0x2AC0` (`beforeInitialize`, `beforeAddLiquidity`, `beforeRemoveLiquidity`, `beforeSwap`, `afterSwap`) |
 | PoolId | `0x2baae0d24faebcb619e7973574a0ba52acb8736362c3b2dcc5ef88f117fb1801` |
 | Pool fee / tickSpacing | `3000` / `60` |
@@ -27,10 +27,9 @@ This is a testnet technical acceptance. It does not represent production readine
 | Initial price | 1:1, tick `0` |
 | Final price | `sqrtPriceX96=79221157794804023777751618716`, tick `-2` |
 
-**Deviation note:** the run was compiled with the default profile (solc `0.8.26`) because the
-`solc 0.8.33` download required by `FOUNDRY_PROFILE=sepolia` was rate-limited (HTTP 429) at run
-time. Functionality is identical; only bytecode parity with a `0.8.33` build differs. Because the
-factory's allowlist pins the creation-code hash, a `0.8.33`-built deployment requires a new factory.
+The current repository pins both default and Sepolia profiles to solc `0.8.26`. It now uses a
+size-oriented optimizer configuration and contains additional security checks, so its creation and
+runtime bytecode cannot match this historical deployment.
 
 ## Contract addresses
 
@@ -83,7 +82,8 @@ minted as claims and redeemed at the start of the next JIT cycle.
 ## Still not covered
 
 - No mainnet deployment or production capital.
-- Bytecode-parity deployment under `FOUNDRY_PROFILE=sepolia` (solc `0.8.33`) — pending, see deviation note.
+- Exact source commit and runtime hash for this historical deployment were not recorded.
+- The current hardened candidate has not been redeployed to Sepolia.
 - No pause/resume or admin-operation transactions in this run (covered on an anvil fork instead); the earlier revision's pause behavior is documented in the previous record.
 - No proof of profitability after fees, adverse selection, and inventory mark-to-market changes.
 - No substitute for a third-party security audit, formal verification, or extended public testnet operation.
