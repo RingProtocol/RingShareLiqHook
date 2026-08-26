@@ -72,7 +72,12 @@ contract Admin is RingShareBase {
         address fwToken = hook.fewFactory().getWrappedToken(Currency.unwrap(currency));
         require(fwToken != address(0), "fwToken not found");
         IERC20(fwToken).forceApprove(address(hook), amount);
-        hook.deposit(key, currency, amount);
+        if (currency == key.currency0) {
+            hook.deposit(key, amount, 0);
+        } else {
+            require(currency == key.currency1, "TOKEN_ADDR not in pool");
+            hook.deposit(key, 0, amount);
+        }
         console2.log("deposited fwToken:", fwToken, amount);
     }
 
@@ -80,7 +85,12 @@ contract Admin is RingShareBase {
         Currency currency = Currency.wrap(vm.envAddress("TOKEN_ADDR"));
         uint256 amount = vm.envUint("AMOUNT");
         address to = vm.envOr("TO", msg.sender);
-        hook.withdraw(key, currency, amount, to);
+        if (currency == key.currency0) {
+            hook.withdraw(key, amount, 0, to);
+        } else {
+            require(currency == key.currency1, "TOKEN_ADDR not in pool");
+            hook.withdraw(key, 0, amount, to);
+        }
         console2.log("withdrew to:", to, amount);
     }
 }

@@ -62,11 +62,11 @@ contract RingShareLiqHandler {
     }
 
     function deposit0(uint96 seed) external {
-        _deposit(CURRENCY_0, FW_TOKEN_0, seed);
+        _deposit(true, FW_TOKEN_0, seed);
     }
 
     function deposit1(uint96 seed) external {
-        _deposit(CURRENCY_1, FW_TOKEN_1, seed);
+        _deposit(false, FW_TOKEN_1, seed);
     }
 
     function withdraw0(uint96 seed) external {
@@ -103,18 +103,26 @@ contract RingShareLiqHandler {
             catch {}
     }
 
-    function _deposit(Currency currency, MockFewWrappedToken fwToken, uint96 seed) private {
+    function _deposit(bool isCurrency0, MockFewWrappedToken fwToken, uint96 seed) private {
         uint256 balance = fwToken.balanceOf(address(this));
         if (balance == 0) return;
         uint256 amount = uint256(seed) % balance + 1;
-        HOOK.deposit(_key, currency, amount);
+        if (isCurrency0) {
+            HOOK.deposit(_key, amount, 0);
+        } else {
+            HOOK.deposit(_key, 0, amount);
+        }
     }
 
     function _withdraw(Currency currency, uint96 seed) private {
         uint256 reserve = HOOK.fwReserveOf(POOL_ID, currency);
         if (reserve == 0) return;
         uint256 amount = uint256(seed) % reserve + 1;
-        HOOK.withdraw(_key, currency, amount, address(this));
+        if (currency == _key.currency0) {
+            HOOK.withdraw(_key, amount, 0, address(this));
+        } else {
+            HOOK.withdraw(_key, 0, amount, address(this));
+        }
     }
 }
 

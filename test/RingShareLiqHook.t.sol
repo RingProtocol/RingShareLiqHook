@@ -347,13 +347,15 @@ contract RingShareLiqHookTest is Test {
 
     function test_DepositIncreasesReserve() public {
         fwToken0.wrap(500 ether);
-        hook.deposit(key, currency0, 500 ether);
-        (uint256 r0,) = hook.getReserves(key);
+        fwToken1.wrap(300 ether);
+        hook.deposit(key, 500 ether, 300 ether);
+        (uint256 r0, uint256 r1) = hook.getReserves(key);
         assertEq(r0, 10500 ether);
+        assertEq(r1, 10300 ether);
     }
 
     function test_WithdrawDecreasesReserve() public {
-        hook.withdraw(key, currency0, 1000 ether, address(this));
+        hook.withdraw(key, 1000 ether, 0, address(this));
         (uint256 r0,) = hook.getReserves(key);
         assertEq(r0, 9000 ether);
     }
@@ -364,18 +366,12 @@ contract RingShareLiqHookTest is Test {
 
         fwToken0.wrap(100 ether);
         uint256 before = fwToken0.balanceOf(address(this));
-        hook.deposit(key, currency0, 100 ether);
-        hook.withdraw(key, currency0, 100 ether, address(this));
+        hook.deposit(key, 100 ether, 0);
+        hook.withdraw(key, 100 ether, 0, address(this));
 
         assertEq(fwToken0.balanceOf(address(this)), before);
         assertEq(replacement.balanceOf(address(hook)), 0);
         assertEq(hook.wrappedTokenOf(currency0), address(fwToken0));
-    }
-
-    function test_RevertDeposit_CurrencyNotInPool() public {
-        Currency foreign = Currency.wrap(address(new MockERC20("foreign", "F", 18)));
-        vm.expectRevert(RingShareLiqHook.CurrencyNotInPool.selector);
-        hook.deposit(key, foreign, 1);
     }
 
     function test_RevertManagementAndViews_ForOtherPool() public {
@@ -385,9 +381,9 @@ contract RingShareLiqHookTest is Test {
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
         hook.bootstrap(otherKey, 0, 0);
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
-        hook.deposit(otherKey, otherKey.currency0, 1);
+        hook.deposit(otherKey, 1, 0);
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
-        hook.withdraw(otherKey, otherKey.currency0, 0, address(this));
+        hook.withdraw(otherKey, 0, 0, address(this));
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
         hook.sweepClaims(otherKey);
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
@@ -412,13 +408,13 @@ contract RingShareLiqHookTest is Test {
 
     function test_RevertWithdraw_Insufficient() public {
         vm.expectRevert(RingShareLiqHook.InsufficientReserve.selector);
-        hook.withdraw(key, currency0, 100_000 ether, address(this));
+        hook.withdraw(key, 100_000 ether, 0, address(this));
     }
 
     function test_RevertDeposit_NotOwner() public {
         vm.prank(address(0xBEEF));
         vm.expectRevert();
-        hook.deposit(key, currency0, 100 ether);
+        hook.deposit(key, 100 ether, 0);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -477,8 +473,7 @@ contract RingShareLiqHookTest is Test {
     }
 
     function test_RevertSwap_AfterAllFwReservesWithdrawn() public {
-        hook.withdraw(key, currency0, 10_000 ether, address(this));
-        hook.withdraw(key, currency1, 10_000 ether, address(this));
+        hook.withdraw(key, 10_000 ether, 10_000 ether, address(this));
         (uint160 beforePrice,,,) = IPoolManager(address(manager)).getSlot0(poolId);
 
         vm.expectRevert();
