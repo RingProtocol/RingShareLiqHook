@@ -298,11 +298,11 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     //                        EXTERNAL: RESERVES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Fund the pool's reserve with the fwToken of `currency`.
-    /// @param key      The pool the capital is credited to.
-    /// @param currency The pool currency (the *underlying* token, not the fwToken).
-    /// @param amount   fwToken amount to pull from the caller.
-    function deposit(PoolKey calldata key, Currency currency, uint256 amount)
+    /// @notice Fund the pool's reserve with fwTokens for one or both currencies.
+    /// @param key     The pool the capital is credited to.
+    /// @param amount0 fwToken0 amount to pull from the caller (0 to skip).
+    /// @param amount1 fwToken1 amount to pull from the caller (0 to skip).
+    function deposit(PoolKey calldata key, uint256 amount0, uint256 amount1)
         external
         onlyOwner
         nonReentrant
@@ -310,12 +310,17 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     {
         PoolId id = key.toId();
         _requirePool(id);
-        _pullFwToken(currency, amount, id);
+        _pullFwToken(key.currency0, amount0, id);
+        _pullFwToken(key.currency1, amount1, id);
     }
 
-    /// @notice Withdraw a pool's fwToken reserve.
+    /// @notice Withdraw the pool's fwToken reserve for one or both currencies.
     /// @dev Debits the pool's ledger first, so the reserve can never be overdrawn.
-    function withdraw(PoolKey calldata key, Currency currency, uint256 amount, address to)
+    /// @param key     The pool the capital is debited from.
+    /// @param amount0 fwToken0 amount to withdraw (0 to skip).
+    /// @param amount1 fwToken1 amount to withdraw (0 to skip).
+    /// @param to      Recipient of the fwTokens.
+    function withdraw(PoolKey calldata key, uint256 amount0, uint256 amount1, address to)
         external
         onlyOwner
         nonReentrant
@@ -325,14 +330,8 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
 
         PoolId id = key.toId();
         _requirePool(id);
-        address fwToken = _wrappedToken(currency);
-        uint256 fw = fwReserveOf[id][currency];
-        if (fw < amount) revert InsufficientReserve();
-        fwReserveOf[id][currency] = fw - amount;
-
-        IERC20(fwToken).safeTransfer(to, amount);
-
-        emit Withdrawn(id, currency, to, amount);
+        _withdrawFwToken(id, key.currency0, amount0, to);
+        _withdrawFwToken(id, key.currency1, amount1, to);
     }
 
     /// @notice Convert the pool's outstanding ERC-6909 claims back into its fwToken reserve.
@@ -676,6 +675,20 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     //                        INTERNAL: FWToken HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /// @dev Debit the pool's fwToken ledger and transfer the fwToken to `to`.
+    function _withdrawFwToken(PoolId poolId, Currency currency, uint256 amount, address to) internal {
+        if (amount == 0) return;
+        address fwToken = _wrappedToken(currency);
+
+        uint256 fw = fwReserveOf[poolId][currency];
+        if (fw < amount) revert InsufficientReserve();
+        fwReserveOf[poolId][currency] = fw - amount;
+
+        IERC20(fwToken).safeTransfer(to, amount);
+
+        emit Withdrawn(poolId, currency, to, amount);
+    }
+
     /// @dev Pull fwToken from the caller and credit it to the pool's fwToken reserve.
     function _pullFwToken(Currency currency, uint256 amount, PoolId poolId) internal {
         if (amount == 0) return;
@@ -830,7 +843,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         available = fwReserveOf[id][currency] + rawReserveOf[id][currency];
         uint256 claims = claimReserveOf[id][currency];
         uint256 managerBalance = currency.balanceOf(address(poolManager));
-        available += claims < managerBalance ? claims : managerBalance;
+        available += (claims < managerBalance ? claims : managerBalance);
     }
 
     function _effectiveReserves(PoolId id, PoolKey calldata key) private view returns (uint256, uint256) {
