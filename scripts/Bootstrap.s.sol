@@ -32,7 +32,7 @@ contract Bootstrap is RingShareBase {
     using SafeERC20 for IERC20;
 
     function run() public {
-        RingShareLiqHook hook = RingShareLiqHook(vm.envAddress("HOOK_ADDR"));
+        RingShareLiqHook hook = RingShareLiqHook(payable(vm.envAddress("HOOK_ADDR")));
         PoolKey memory key = _poolKey(address(hook));
 
         uint256 amount = vm.envOr("RESERVE_AMOUNT", uint256(100 ether));

@@ -9,6 +9,7 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
+import {IWETH9} from "../src/interfaces/external/IWETH9.sol";
 import {IAllowlistedFactory} from "../src/factory/interfaces/IAllowlistedFactory.sol";
 
 import {RingShareBase} from "./base/RingShareBase.sol";
@@ -21,6 +22,7 @@ import {RingShareBase} from "./base/RingShareBase.sol";
 ///         ~2^14 iterations.
 ///
 /// Env: ALLOWLISTED_FACTORY_ADDR, POOL_MANAGER_ADDR, FEW_FACTORY_ADDR
+///      WETH9_ADDR (optional, address(0) if pool is ERC-20/ERC-20),
 ///      OWNER (default: broadcaster), MAX_GAS (default 1000000),
 ///      SALT / SALT_START (optional)
 ///
@@ -32,11 +34,12 @@ contract CreateHook is RingShareBase {
         address factoryAddr = vm.envAddress("ALLOWLISTED_FACTORY_ADDR");
         IPoolManager poolManager = IPoolManager(vm.envAddress("POOL_MANAGER_ADDR"));
         IFewFactory fewFactory = IFewFactory(vm.envAddress("FEW_FACTORY_ADDR"));
+        IWETH9 weth9 = IWETH9(vm.envOr("WETH9_ADDR", address(0)));
         address owner = vm.envOr("OWNER", msg.sender);
         uint32 maxGas = uint32(vm.envOr("MAX_GAS", uint256(1_000_000)));
 
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory constructorArgs = abi.encode(poolManager, maxGas, owner, fewFactory);
+        bytes memory constructorArgs = abi.encode(poolManager, maxGas, owner, fewFactory, weth9);
         bytes32 initCodeHash = keccak256(abi.encodePacked(creationCode, constructorArgs));
 
         bytes32 salt = bytes32(vm.envOr("SALT", uint256(0)));

@@ -25,7 +25,7 @@ contract InitializePool is RingShareBase {
     using PoolIdLibrary for PoolKey;
 
     function run() public returns (int24 tick) {
-        RingShareLiqHook hook = RingShareLiqHook(vm.envAddress("HOOK_ADDR"));
+        RingShareLiqHook hook = RingShareLiqHook(payable(vm.envAddress("HOOK_ADDR")));
         PoolKey memory key = _poolKey(address(hook));
         uint160 sqrtPriceX96 = uint160(vm.envOr("SQRT_PRICE_X96", uint256(SQRT_PRICE_1_1)));
 
