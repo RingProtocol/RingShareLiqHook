@@ -36,7 +36,7 @@ contract Admin is RingShareBase {
     using SafeERC20 for IERC20;
 
     function run() public {
-        RingShareLiqHook hook = RingShareLiqHook(vm.envAddress("HOOK_ADDR"));
+        RingShareLiqHook hook = RingShareLiqHook(payable(vm.envAddress("HOOK_ADDR")));
         PoolKey memory key = _poolKey(address(hook));
         string memory action = vm.envString("ACTION");
         bytes32 a = keccak256(bytes(action));

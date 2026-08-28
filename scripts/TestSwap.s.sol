@@ -39,7 +39,7 @@ contract TestSwap is RingShareBase {
     using StateLibrary for IPoolManager;
 
     function run() public {
-        RingShareLiqHook hook = RingShareLiqHook(vm.envAddress("HOOK_ADDR"));
+        RingShareLiqHook hook = RingShareLiqHook(payable(vm.envAddress("HOOK_ADDR")));
         IPoolManager poolManager = IPoolManager(vm.envAddress("POOL_MANAGER_ADDR"));
         PoolKey memory key = _poolKey(address(hook));
 
