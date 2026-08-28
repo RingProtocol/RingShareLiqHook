@@ -482,26 +482,29 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     //                        INTERNAL: HOOK CALLBACKS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @dev External LP additions are blocked. v4-core's `Hooks.noSelfCall` skips the hook
-    ///      callback entirely when the hook itself is the caller, so the only path that
-    ///      reaches this body is an external `modifyLiquidity` call, which is always rejected.
-    function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+    /// @dev Only the owner may add liquidity externally. v4-core's `Hooks.noSelfCall` skips the
+    ///      hook callback entirely when the hook itself is the caller, so the only path that reaches
+    ///      this body is an external `modifyLiquidity` call; JIT-internal calls bypass it.
+    function _beforeAddLiquidity(address sender, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
         internal
-        pure
+        view
         override
         returns (bytes4)
     {
-        revert LiquidityNotAllowed();
+        if (sender != owner()) revert LiquidityNotAllowed();
+        return IHooks.beforeAddLiquidity.selector;
     }
 
-    /// @dev External LP removals are blocked. Same `noSelfCall` reasoning as `_beforeAddLiquidity`.
-    function _beforeRemoveLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+    /// @dev Only the owner may remove liquidity externally. Same `noSelfCall` reasoning as
+    ///      `_beforeAddLiquidity`.
+    function _beforeRemoveLiquidity(address sender, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
         internal
-        pure
+        view
         override
         returns (bytes4)
     {
-        revert LiquidityNotAllowed();
+        if (sender != owner()) revert LiquidityNotAllowed();
+        return IHooks.beforeRemoveLiquidity.selector;
     }
 
     /// @dev JIT entry point. Deploys multi-range JIT liquidity under the JIT lock.
