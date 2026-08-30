@@ -23,7 +23,6 @@ import {LiquidityBucket} from "alf/types/Distribution.sol";
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
 import {IFewWrappedToken} from "../src/interfaces/external/IFewWrappedToken.sol";
-import {IWETH9} from "../src/interfaces/external/IWETH9.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Minimal FewWrappedToken mock: 1:1 wrap/unwrap against the underlying ERC20.
@@ -195,11 +194,11 @@ contract RingShareLiqHookTest is Test {
         IERC20(Currency.unwrap(currency1)).approve(address(fwToken1), type(uint256).max);
 
         // Deploy the hook via CREATE2 with the right flag bits
-        // Constructor: (IPoolManager, uint32 maxGas, address owner, IFewFactory, IWETH9)
+        // Constructor: (IPoolManager, uint32 maxGas, address owner, IFewFactory)
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args = abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(fewFactory)));
         (bytes32 salt, address predicted) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
-        hook = new RingShareLiqHook{salt: salt}(manager, 500_000, owner, fewFactory, IWETH9(address(0)));
+        hook = new RingShareLiqHook{salt: salt}(manager, 500_000, owner, fewFactory);
         require(address(hook) == predicted, "hook addr mismatch");
         require(uint160(address(hook)) & 0x3FFF == HOOK_FLAGS, "hook flags mismatch");
 
@@ -258,18 +257,18 @@ contract RingShareLiqHookTest is Test {
 
     function test_RevertConstruct_ZeroFactory() public {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(0)), IWETH9(address(0)));
+        bytes memory args = abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(0)));
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         vm.expectRevert(RingShareLiqHook.WrappedTokenNotFound.selector);
-        new RingShareLiqHook{salt: salt}(manager, 500_000, owner, IFewFactory(address(0)), IWETH9(address(0)));
+        new RingShareLiqHook{salt: salt}(manager, 500_000, owner, IFewFactory(address(0)));
     }
 
     function test_RevertConstruct_ZeroPoolManager() public {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(0), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args = abi.encode(address(0), uint32(500_000), owner, IFewFactory(address(fewFactory)));
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         vm.expectRevert(RingShareLiqHook.InvalidPoolManager.selector);
-        new RingShareLiqHook{salt: salt}(IPoolManager(address(0)), 500_000, owner, fewFactory, IWETH9(address(0)));
+        new RingShareLiqHook{salt: salt}(IPoolManager(address(0)), 500_000, owner, fewFactory);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -610,9 +609,9 @@ contract RingShareLiqHookTest is Test {
 
     function _deployFreshHook(uint32 maxGas) internal returns (RingShareLiqHook freshHook) {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), maxGas, owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args = abi.encode(address(manager), maxGas, owner, IFewFactory(address(fewFactory)));
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
-        freshHook = new RingShareLiqHook{salt: salt}(manager, maxGas, owner, fewFactory, IWETH9(address(0)));
+        freshHook = new RingShareLiqHook{salt: salt}(manager, maxGas, owner, fewFactory);
     }
 
     function _keyFor(address targetHook) internal view returns (PoolKey memory) {

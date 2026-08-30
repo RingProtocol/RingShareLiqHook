@@ -39,7 +39,7 @@ contract TestSwap is RingShareBase {
     using StateLibrary for IPoolManager;
 
     function run() public {
-        RingShareLiqHook hook = RingShareLiqHook(payable(vm.envAddress("HOOK_ADDR")));
+        RingShareLiqHook hook = RingShareLiqHook(vm.envAddress("HOOK_ADDR"));
         IPoolManager poolManager = IPoolManager(vm.envAddress("POOL_MANAGER_ADDR"));
         PoolKey memory key = _poolKey(address(hook));
 
@@ -52,13 +52,10 @@ contract TestSwap is RingShareBase {
         vm.startBroadcast();
         address routerAddr = vm.envOr("ROUTER_ADDR", address(0));
         PoolSwapTest router = routerAddr == address(0) ? new PoolSwapTest(poolManager) : PoolSwapTest(routerAddr);
-        // Approve only non-native currencies to the router; native ETH is sent as msg.value.
-        if (!key.currency0.isAddressZero()) {
-            IERC20(Currency.unwrap(key.currency0)).approve(address(router), type(uint256).max);
-        }
+        IERC20(Currency.unwrap(key.currency0)).approve(address(router), type(uint256).max);
         IERC20(Currency.unwrap(key.currency1)).approve(address(router), type(uint256).max);
 
-        BalanceDelta delta = router.swap{value: key.currency0.isAddressZero() && zeroForOne ? amountIn : 0}(
+        BalanceDelta delta = router.swap(
             key,
             SwapParams({
                 zeroForOne: zeroForOne,

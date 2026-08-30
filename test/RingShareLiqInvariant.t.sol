@@ -20,7 +20,6 @@ import {LiquidityBucket, activeLiquidity} from "alf/types/Distribution.sol";
 
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
-import {IWETH9} from "../src/interfaces/external/IWETH9.sol";
 import {HookMiner, MockFewFactory, MockFewWrappedToken} from "./RingShareLiqHook.t.sol";
 
 contract RingShareLiqHandler {
@@ -169,9 +168,9 @@ contract RingShareLiqInvariantTest is StdInvariant, Test {
 
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
         bytes memory args =
-            abi.encode(address(manager), uint32(500_000), address(this), IFewFactory(address(fewFactory)), IWETH9(address(0)));
+            abi.encode(address(manager), uint32(500_000), address(this), IFewFactory(address(fewFactory)));
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
-        hook = new RingShareLiqHook{salt: salt}(manager, 500_000, address(this), fewFactory, IWETH9(address(0)));
+        hook = new RingShareLiqHook{salt: salt}(manager, 500_000, address(this), fewFactory);
 
         key = PoolKey({
             currency0: currency0, currency1: currency1, fee: 3000, tickSpacing: 60, hooks: IHooks(address(hook))
