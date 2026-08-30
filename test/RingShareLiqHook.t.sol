@@ -419,13 +419,11 @@ contract RingShareLiqHookTest is Test {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    //                          LP GATING
+    //                          EXTERNAL LP (OPEN)
     // ══════════════════════════════════════════════════════════════════════
 
-    function test_RevertExternalAddLiquidity() public {
-        // The PoolManager wraps the hook's LiquidityNotAllowed revert, so we just
-        // check that the call reverts (external LP is blocked by the hook).
-        vm.expectRevert();
+    function test_ExternalAddLiquiditySucceeds() public {
+        // External LP is now allowed — the hook dilutes it via JIT reserve injection.
         modifyLiquidityRouter.modifyLiquidity(
             key, ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: int256(1 ether), salt: 0}), ""
         );

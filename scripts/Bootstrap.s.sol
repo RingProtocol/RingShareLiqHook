@@ -44,7 +44,9 @@ contract Bootstrap is RingShareBase {
         vm.startBroadcast();
         _fund(key.currency0, amount0, fewFactory, address(hook));
         _fund(key.currency1, amount1, fewFactory, address(hook));
-        hook.bootstrap(key, amount0, amount1);
+        // For native ETH pools, send amount0 as msg.value with the bootstrap call.
+        uint256 ethValue = key.currency0.isAddressZero() ? amount0 : 0;
+        hook.bootstrap{value: ethValue}(key, amount0, amount1);
         vm.stopBroadcast();
 
         (uint256 r0, uint256 r1) = hook.getReserves(key);
@@ -54,9 +56,16 @@ contract Bootstrap is RingShareBase {
     }
 
     /// @dev Ensure the broadcaster holds `amount` of the currency's fwToken (wrapping the
-    ///      shortfall) and grant the hook an allowance for it.
+    ///      shortfall) and grant the hook an allowance for it. For native ETH (`address(0)`),
+    ///      the hook's `bootstrap` handles ETH → WETH9 → fwWETH internally via `msg.value`, so
+    ///      no pre-funding is needed — the script just sends ETH along with the call.
     function _fund(Currency currency, uint256 amount, IFewFactory fewFactory, address hookAddr) internal {
         if (amount == 0) return;
+        if (currency.isAddressZero()) {
+            // Native ETH: bootstrap() wraps ETH → WETH9 → fwWETH internally via msg.value.
+            // Nothing to pre-fund; the hook pulls ETH from msg.value.
+            return;
+        }
         address token = Currency.unwrap(currency);
         address fwToken = fewFactory.getWrappedToken(token);
         require(fwToken != address(0), "fwToken not found; call FewFactory.createToken first");

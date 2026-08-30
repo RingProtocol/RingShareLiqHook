@@ -207,7 +207,6 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     error WrappedTokenNotFound();
     error InsufficientReserve();
     error UnauthorizedCallback();
-    error LiquidityNotAllowed();
     error InvalidHookAddress();
     error DynamicFeeNotSupported();
     error PoolAlreadyBootstrapped();
@@ -488,7 +487,8 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
 
     /// @dev Required v4 hook flags:
     ///      - beforeInitialize: block direct init (force initializePool)
-    ///      - beforeAddLiquidity / beforeRemoveLiquidity: restrict to hook-only LP
+    ///      - beforeAddLiquidity / beforeRemoveLiquidity: open to any LP
+    ///        (external LP diluted by JIT reserve injection on each swap)
     ///      - beforeSwap: JIT deployment
     ///      - afterSwap: JIT teardown + delta resolution
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
@@ -514,28 +514,28 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     //                        INTERNAL: HOOK CALLBACKS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @dev Only the owner may add liquidity externally. v4-core's `Hooks.noSelfCall` skips the
-    ///      hook callback entirely when the hook itself is the caller, so the only path that reaches
-    ///      this body is an external `modifyLiquidity` call; JIT-internal calls bypass it.
-    function _beforeAddLiquidity(address sender, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+    /// @dev External `modifyLiquidity` (add) is open to any LP — external liquidity
+    ///      is diluted by the hook's JIT reserve injection on each swap. v4-core's
+    ///      `Hooks.noSelfCall` skips this callback when the hook itself is the caller,
+    ///      so JIT-internal calls always bypass it.
+    function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
         internal
         view
         override
         returns (bytes4)
     {
-        if (sender != owner()) revert LiquidityNotAllowed();
         return IHooks.beforeAddLiquidity.selector;
     }
 
-    /// @dev Only the owner may remove liquidity externally. Same `noSelfCall` reasoning as
-    ///      `_beforeAddLiquidity`.
-    function _beforeRemoveLiquidity(address sender, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+    /// @dev External `modifyLiquidity` (remove) is open to any LP — symmetric with
+    ///      `_beforeAddLiquidity` so external LPs can withdraw their own positions.
+    ///      v4-core's `Hooks.noSelfCall` skips this callback for hook-internal calls.
+    function _beforeRemoveLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
         internal
         view
         override
         returns (bytes4)
     {
-        if (sender != owner()) revert LiquidityNotAllowed();
         return IHooks.beforeRemoveLiquidity.selector;
     }
 

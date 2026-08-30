@@ -52,10 +52,13 @@ contract TestSwap is RingShareBase {
         vm.startBroadcast();
         address routerAddr = vm.envOr("ROUTER_ADDR", address(0));
         PoolSwapTest router = routerAddr == address(0) ? new PoolSwapTest(poolManager) : PoolSwapTest(routerAddr);
-        IERC20(Currency.unwrap(key.currency0)).approve(address(router), type(uint256).max);
+        // Approve only non-native currencies to the router; native ETH is sent as msg.value.
+        if (!key.currency0.isAddressZero()) {
+            IERC20(Currency.unwrap(key.currency0)).approve(address(router), type(uint256).max);
+        }
         IERC20(Currency.unwrap(key.currency1)).approve(address(router), type(uint256).max);
 
-        BalanceDelta delta = router.swap(
+        BalanceDelta delta = router.swap{value: key.currency0.isAddressZero() && zeroForOne ? amountIn : 0}(
             key,
             SwapParams({
                 zeroForOne: zeroForOne,
