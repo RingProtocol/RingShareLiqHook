@@ -10,7 +10,6 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {BaseHook} from "../src/utils/BaseHook.sol";
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
-import {IWETH9} from "../src/interfaces/external/IWETH9.sol";
 
 contract ZeroFirstApprovalToken is IERC20 {
     mapping(address => uint256) public balanceOf;
@@ -53,7 +52,7 @@ contract FalseApprovalToken is IERC20 {
 }
 
 contract RingShareLiqHookApprovalHarness is RingShareLiqHook {
-    constructor() RingShareLiqHook(IPoolManager(address(1)), uint32(500_000), msg.sender, IFewFactory(address(1)), IWETH9(address(0))) {}
+    constructor() RingShareLiqHook(IPoolManager(address(1)), uint32(500_000), msg.sender, IFewFactory(address(1))) {}
 
     function validateHookAddress(BaseHook) internal pure override {}
 
