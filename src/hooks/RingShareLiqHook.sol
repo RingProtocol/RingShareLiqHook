@@ -103,9 +103,9 @@ import {IWETH9} from "../interfaces/external/IWETH9.sol";
 ///     4. Clear the JIT lock
 ///
 /// @dev Native ETH (`address(0)`) is supported **only as `currency0`**. The hook holds reserves
-///      as fwTokens regardless: for native, the chain is ETH → WETH9 (via `weth9.deposit`) → fwWETH
-///      (via Few `wrap`), and the reverse on unwrap. A `receive()` function accepts ETH from
-///      WETH9 withdrawals and PoolManager `take`.
+///      as fwTokens regardless: callers deposit fwWETH directly, while JIT liquidity unwraps it
+///      through WETH9 to ETH and wraps leftover ETH back after each cycle. A `receive()` function
+///      accepts ETH from WETH9 withdrawals and PoolManager `take`.
 contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCallback {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -147,8 +147,8 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     IFewFactory public immutable fewFactory;
 
     /// @notice The canonical WETH9 contract, used only when `currency0` is native ETH
-    ///         (`address(0)`). The hook wraps ETH → WETH9 → fwWETH on deposit and reverses it
-    ///         on withdrawal / JIT unwrap. Unused for ERC-20 / ERC-20 pools.
+    ///         (`address(0)`). The hook uses it when converting between fwWETH reserves and ETH
+    ///         for withdrawals and JIT liquidity. Unused for ERC-20 / ERC-20 pools.
     IWETH9 public immutable weth9;
 
     /// @notice The contract that deployed this hook. Canonical deployments go through the
@@ -295,7 +295,6 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     /// @param amount1 fwToken1 amount to deposit for currency1.
     function bootstrap(PoolKey calldata key, uint256 amount0, uint256 amount1)
         external
-        payable
         onlyOwner
         nonReentrant
         whenJITNotInProgress
@@ -303,13 +302,6 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         PoolId id = key.toId();
         _requirePool(id);
         if (_liveness.isLive(id)) revert PoolAlreadyBootstrapped();
-
-        // Validate msg.value: if currency0 is native, it must equal amount0; otherwise zero.
-        if (key.currency0.isAddressZero()) {
-            if (msg.value != amount0) revert NativeNotSupported();
-        } else if (msg.value != 0) {
-            revert NativeNotSupported();
-        }
 
         if (amount0 > 0) _pullFwToken(key.currency0, amount0, id);
         if (amount1 > 0) _pullFwToken(key.currency1, amount1, id);
@@ -328,19 +320,12 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     /// @param amount1 fwToken1 amount to pull from the caller (0 to skip).
     function deposit(PoolKey calldata key, uint256 amount0, uint256 amount1)
         external
-        payable
         onlyOwner
         nonReentrant
         whenJITNotInProgress
     {
         PoolId id = key.toId();
         _requirePool(id);
-        // Validate msg.value: if currency0 is native ETH, it must equal amount0; otherwise zero.
-        if (key.currency0.isAddressZero()) {
-            if (msg.value != amount0) revert NativeNotSupported();
-        } else if (msg.value != 0) {
-            revert NativeNotSupported();
-        }
         _pullFwToken(key.currency0, amount0, id);
         _pullFwToken(key.currency1, amount1, id);
     }
@@ -735,30 +720,15 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     }
 
     /// @dev Pull fwToken from the caller and credit it to the pool's fwToken reserve.
-    ///      For native ETH (`currency0 == address(0)`), the caller sends ETH via `msg.value`;
-    ///      the hook wraps ETH → WETH9 → fwWETH in-place.
     function _pullFwToken(Currency currency, uint256 amount, PoolId poolId) internal {
         if (amount == 0) return;
         address fwToken = _wrappedToken(currency);
+        uint256 before = IERC20(fwToken).balanceOf(address(this));
+        IERC20(fwToken).safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = IERC20(fwToken).balanceOf(address(this)) - before;
 
-        if (currency.isAddressZero()) {
-            // Native: ETH (from msg.value) → WETH9 → fwWETH
-            weth9.deposit{value: amount}();
-            _ensureApproved(currency, fwToken);
-            uint256 before = IERC20(fwToken).balanceOf(address(this));
-            IFewWrappedToken(fwToken).wrap(amount);
-            uint256 received = IERC20(fwToken).balanceOf(address(this)) - before;
-
-            fwReserveOf[poolId][currency] += received;
-            emit Deposited(poolId, currency, received);
-        } else {
-            uint256 before = IERC20(fwToken).balanceOf(address(this));
-            IERC20(fwToken).safeTransferFrom(msg.sender, address(this), amount);
-            uint256 received = IERC20(fwToken).balanceOf(address(this)) - before;
-
-            fwReserveOf[poolId][currency] += received;
-            emit Deposited(poolId, currency, received);
-        }
+        fwReserveOf[poolId][currency] += received;
+        emit Deposited(poolId, currency, received);
     }
 
     /// @dev Move up to `amount` of the pool's fwToken reserve into its raw reserve.

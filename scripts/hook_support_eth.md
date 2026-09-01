@@ -1,0 +1,6 @@
+# RingShareLiqHook
+Creation code hash for constructing AllowlistedFactory
+0x7fbf425d355a42c8f8f63cedba8f6189962d0cce3185febdd3261f273d03bda6
+
+新部署的合约地址：
+

@@ -5,13 +5,10 @@ import {console2} from "forge-std/console2.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
-import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
-
 import {RingShareBase} from "./base/RingShareBase.sol";
 
 /// @notice Owner operations on a live hook, selected by the `ACTION` env var.
@@ -31,8 +28,6 @@ import {RingShareBase} from "./base/RingShareBase.sol";
 ///     forge script scripts/Admin.s.sol:Admin \
 ///     --rpc-url $SEPOLIA_RPC_URL --private-key $SEPOLIA_PRIVATE_KEY --broadcast -vv
 contract Admin is RingShareBase {
-    using CurrencyLibrary for Currency;
-    using PoolIdLibrary for PoolKey;
     using SafeERC20 for IERC20;
 
     function run() public {
@@ -69,7 +64,7 @@ contract Admin is RingShareBase {
     function _deposit(RingShareLiqHook hook, PoolKey memory key) internal {
         Currency currency = Currency.wrap(vm.envAddress("TOKEN_ADDR"));
         uint256 amount = vm.envUint("AMOUNT");
-        address fwToken = hook.fewFactory().getWrappedToken(Currency.unwrap(currency));
+        address fwToken = hook.wrappedTokenOf(currency);
         require(fwToken != address(0), "fwToken not found");
         IERC20(fwToken).forceApprove(address(hook), amount);
         if (currency == key.currency0) {

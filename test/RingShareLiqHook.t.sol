@@ -26,6 +26,46 @@ import {IFewWrappedToken} from "../src/interfaces/external/IFewWrappedToken.sol"
 import {IWETH9} from "../src/interfaces/external/IWETH9.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+contract MockWETH9 is IWETH9 {
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    receive() external payable {
+        deposit();
+    }
+
+    function deposit() public payable {
+        totalSupply += msg.value;
+        balanceOf[msg.sender] += msg.value;
+    }
+
+    function withdraw(uint256 amount) external {
+        balanceOf[msg.sender] -= amount;
+        totalSupply -= amount;
+        payable(msg.sender).transfer(amount);
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        uint256 allowed = allowance[from][msg.sender];
+        if (allowed != type(uint256).max) allowance[from][msg.sender] = allowed - amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
 /// @notice Minimal FewWrappedToken mock: 1:1 wrap/unwrap against the underlying ERC20.
 contract MockFewWrappedToken is IFewWrappedToken {
     address public immutable token;
@@ -197,7 +237,8 @@ contract RingShareLiqHookTest is Test {
         // Deploy the hook via CREATE2 with the right flag bits
         // Constructor: (IPoolManager, uint32 maxGas, address owner, IFewFactory, IWETH9)
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args =
+            abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
         (bytes32 salt, address predicted) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         hook = new RingShareLiqHook{salt: salt}(manager, 500_000, owner, fewFactory, IWETH9(address(0)));
         require(address(hook) == predicted, "hook addr mismatch");
@@ -258,7 +299,8 @@ contract RingShareLiqHookTest is Test {
 
     function test_RevertConstruct_ZeroFactory() public {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(0)), IWETH9(address(0)));
+        bytes memory args =
+            abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(0)), IWETH9(address(0)));
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         vm.expectRevert(RingShareLiqHook.WrappedTokenNotFound.selector);
         new RingShareLiqHook{salt: salt}(manager, 500_000, owner, IFewFactory(address(0)), IWETH9(address(0)));
@@ -266,7 +308,8 @@ contract RingShareLiqHookTest is Test {
 
     function test_RevertConstruct_ZeroPoolManager() public {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(0), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args =
+            abi.encode(address(0), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         vm.expectRevert(RingShareLiqHook.InvalidPoolManager.selector);
         new RingShareLiqHook{salt: salt}(IPoolManager(address(0)), 500_000, owner, fewFactory, IWETH9(address(0)));
@@ -353,6 +396,39 @@ contract RingShareLiqHookTest is Test {
         (uint256 r0, uint256 r1) = hook.getReserves(key);
         assertEq(r0, 10500 ether);
         assertEq(r1, 10300 ether);
+    }
+
+    function test_NativeReservePullsExistingFwWeth() public {
+        MockWETH9 weth = new MockWETH9();
+        MockFewWrappedToken fwWeth = fewFactory.create(address(weth));
+        RingShareLiqHook nativeHook = _deployFreshHook(500_003, weth);
+        PoolKey memory nativeKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: currency0,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(nativeHook))
+        });
+        PoolId nativePoolId = nativeKey.toId();
+        nativeHook.initializePool(
+            nativeKey, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: _oneBucket()})
+        );
+
+        vm.deal(address(this), 150 ether);
+        weth.deposit{value: 150 ether}();
+        weth.approve(address(fwWeth), type(uint256).max);
+        fwWeth.wrap(150 ether);
+        fwToken0.wrap(150 ether);
+        fwWeth.approve(address(nativeHook), type(uint256).max);
+        fwToken0.approve(address(nativeHook), type(uint256).max);
+
+        nativeHook.bootstrap(nativeKey, 100 ether, 100 ether);
+        nativeHook.deposit(nativeKey, 50 ether, 50 ether);
+
+        assertEq(nativeHook.fwReserveOf(nativePoolId, nativeKey.currency0), 150 ether);
+        assertEq(nativeHook.fwReserveOf(nativePoolId, nativeKey.currency1), 150 ether);
+        assertEq(fwWeth.balanceOf(address(nativeHook)), 150 ether);
+        assertEq(address(nativeHook).balance, 0);
     }
 
     function test_WithdrawDecreasesReserve() public {
@@ -609,10 +685,14 @@ contract RingShareLiqHookTest is Test {
     }
 
     function _deployFreshHook(uint32 maxGas) internal returns (RingShareLiqHook freshHook) {
+        return _deployFreshHook(maxGas, IWETH9(address(0)));
+    }
+
+    function _deployFreshHook(uint32 maxGas, IWETH9 weth) internal returns (RingShareLiqHook freshHook) {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), maxGas, owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args = abi.encode(address(manager), maxGas, owner, IFewFactory(address(fewFactory)), weth);
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
-        freshHook = new RingShareLiqHook{salt: salt}(manager, maxGas, owner, fewFactory, IWETH9(address(0)));
+        freshHook = new RingShareLiqHook{salt: salt}(manager, maxGas, owner, fewFactory, weth);
     }
 
     function _keyFor(address targetHook) internal view returns (PoolKey memory) {
