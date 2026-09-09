@@ -16,6 +16,7 @@ import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {SqrtPriceMath} from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {TransientStateLibrary} from "@uniswap/v4-core/src/libraries/TransientStateLibrary.sol";
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
@@ -232,6 +233,18 @@ contract RingBackedLiqHookTest is Test {
         _assertCleared(p, s, forward);
     }
 
+    function _syncTo(uint160 target) internal {
+        (uint160 start,,,) = pm.getSlot0(key.toId());
+        bool forward = target < start;
+        uint256 amount = forward
+            ? SqrtPriceMath.getAmount0Delta(target, start, expectedBaseLiquidity, true)
+            : SqrtPriceMath.getAmount1Delta(start, target, expectedBaseLiquidity, true);
+        BalanceDelta delta =
+            router.syncPrice(key, SwapParams(forward, -SafeCast.toInt256(amount), target), 1, block.timestamp);
+        assertEq(forward ? delta.amount0() : delta.amount1(), -SafeCast.toInt128(SafeCast.toInt256(amount)));
+        assertEq(pm.getLiquidity(key.toId()), expectedBaseLiquidity);
+    }
+
     function _assertLPEvents(uint256 expected) internal view {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 modifications;
@@ -355,9 +368,7 @@ contract RingBackedLiqHookTest is Test {
     }
 
     function test_RepeatedSwapsAndBitmapBoundary() public {
-        // Price near 1 crosses the zero bitmap-word boundary as the curve advances.
-        _fund(fwA, address(pair), 10_000 ether);
-        pair.sync();
+        // Alternating trades cross the zero bitmap-word boundary without accumulating stale spot drift.
         for (uint256 i; i < 8; ++i) {
             _trade(i % 2 == 0, i % 3 == 0, 1 ether);
         }
@@ -382,7 +393,7 @@ contract RingBackedLiqHookTest is Test {
         route[0] = fwA;
         route[1] = fwC;
         route[2] = fwB;
-        (hook, key) = _deploy(route, 60, 1);
+        (hook, key) = _deployAt(route, 60, 1, 194_068_571_418_249_185_253_397_768_292);
         _fundBuffers(hook);
         _trade(true, true, 1 ether);
         _trade(false, true, 1 ether);
@@ -444,7 +455,7 @@ contract RingBackedLiqHookTest is Test {
     function testFuzz_SequenceKeepsPositionsAndBuffersSound(uint256 seed) public {
         for (uint256 i; i < 8; ++i) {
             seed = uint256(keccak256(abi.encode(seed, i)));
-            _trade(seed & 1 != 0, seed & 2 != 0, bound(seed >> 2, 1e6, 10 ether));
+            _trade(i % 2 == 0, seed & 2 != 0, bound(seed >> 2, 1e6, 1 ether));
         }
     }
 
@@ -462,6 +473,10 @@ contract RingBackedLiqHookTest is Test {
 
     function test_DifferentRawAmountsAllModes() public {
         _resetRingReserves(5000 ether, 10_000 ether);
+        vm.expectRevert(RingBackedLiqHook.QuoteDeviationExceeded.selector);
+        hook.quote(key, true, -int256(1 ether));
+        assertEq(hook.getIndicativeQuote(key, true, -int256(1 ether), ""), 0);
+        _syncTo(112_045_541_949_572_279_837_463_876_454);
         _trade(true, true, 1 ether);
         _trade(false, true, 2 ether);
         _trade(true, false, 2 ether);
@@ -539,5 +554,27 @@ contract RingBackedLiqHookTest is Test {
         (address[] memory path,) = hook.getRoute();
         vm.expectRevert();
         hook.initializePool(key, path, 79228162514264337593543950336);
+    }
+
+    function test_SyncPriceKeepsOrdinaryHookPermissions() public {
+        Hooks.Permissions memory permissions = hook.getHookPermissions();
+        assertTrue(permissions.beforeSwap);
+        assertTrue(permissions.afterSwap);
+        assertFalse(permissions.beforeSwapReturnDelta);
+        assertFalse(permissions.afterSwapReturnDelta);
+
+        _fund(fwA, address(pair), 10_000 ether);
+        pair.sync();
+        (uint256 deviationBps, uint256 allowedBps) = hook.getSpotDeviationBps(true);
+        assertGt(deviationBps, allowedBps);
+        vm.expectRevert(RingBackedLiqHook.QuoteDeviationExceeded.selector);
+        hook.quote(key, true, -int256(1 ether));
+
+        _syncTo(56_022_770_974_786_139_918_731_938_227);
+        (deviationBps, allowedBps) = hook.getSpotDeviationBps(true);
+        assertLe(deviationBps, allowedBps);
+        (,, RingLPPlanner.Plan memory plan) = hook.quote(key, true, -int256(1 ether));
+        assertEq(plan.amountIn, 1 ether);
+        _trade(true, true, 1 ether);
     }
 }

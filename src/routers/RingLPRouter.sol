@@ -20,6 +20,7 @@ contract RingLPRouter is IUnlockCallback, ReentrancyGuardTransient {
     using CurrencyLibrary for Currency;
     using TransientStateLibrary for IPoolManager;
     IPoolManager public immutable poolManager;
+    bytes32 private constant SYNC_SWAP = keccak256("RingBackedLiqHook.sync");
     error InvalidSwap();
     error Expired();
     error UnauthorizedCallback();
@@ -36,6 +37,26 @@ contract RingLPRouter is IUnlockCallback, ReentrancyGuardTransient {
         nonReentrant
         returns (BalanceDelta)
     {
+        return _swap(key, params, limit, deadline, bytes(""));
+    }
+
+    /// @notice Trades only against permanent v4 liquidity so arbitrageurs can realign its price with Ring.
+    /// @dev The caller chooses direction, amount, price limit and slippage limit and supplies all input capital.
+    function syncPrice(PoolKey calldata key, SwapParams calldata params, uint256 limit, uint256 deadline)
+        external
+        nonReentrant
+        returns (BalanceDelta)
+    {
+        return _swap(key, params, limit, deadline, abi.encode(SYNC_SWAP));
+    }
+
+    function _swap(
+        PoolKey calldata key,
+        SwapParams calldata params,
+        uint256 limit,
+        uint256 deadline,
+        bytes memory hookData
+    ) private returns (BalanceDelta) {
         // A timestamp deadline is intentional: it limits how long the user-authorized swap can execute.
         // Small validator timestamp variance cannot bypass the user's amount limit.
         // forge-lint: disable-next-line(block-timestamp)
@@ -46,19 +67,26 @@ contract RingLPRouter is IUnlockCallback, ReentrancyGuardTransient {
         ) revert InvalidSwap();
         uint256 budget = params.amountSpecified < 0 ? SafeCast.toUint256(-params.amountSpecified) : limit;
         if (budget > uint256(uint128(type(int128).max))) revert InvalidSwap();
-        return abi.decode(poolManager.unlock(abi.encode(msg.sender, key, params, limit, budget)), (BalanceDelta));
+        return
+            abi.decode(poolManager.unlock(abi.encode(msg.sender, key, params, limit, budget, hookData)), (BalanceDelta));
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         if (msg.sender != address(poolManager) || !_reentrancyGuardEntered()) revert UnauthorizedCallback();
-        (address payer, PoolKey memory key, SwapParams memory params, uint256 limit, uint256 budget) =
-            abi.decode(data, (address, PoolKey, SwapParams, uint256, uint256));
+        (
+            address payer,
+            PoolKey memory key,
+            SwapParams memory params,
+            uint256 limit,
+            uint256 budget,
+            bytes memory hookData
+        ) = abi.decode(data, (address, PoolKey, SwapParams, uint256, uint256, bytes));
         Currency input = params.zeroForOne ? key.currency0 : key.currency1;
         Currency output = params.zeroForOne ? key.currency1 : key.currency0;
         poolManager.sync(input);
         IERC20(Currency.unwrap(input)).safeTransferFrom(payer, address(poolManager), budget);
         if (poolManager.settle() != budget) revert InvalidSwap();
-        BalanceDelta delta = poolManager.swap(key, params, "");
+        BalanceDelta delta = poolManager.swap(key, params, hookData);
         int128 di = params.zeroForOne ? delta.amount0() : delta.amount1();
         int128 dout = params.zeroForOne ? delta.amount1() : delta.amount0();
         if (di >= 0 || dout <= 0) revert InvalidSwap();

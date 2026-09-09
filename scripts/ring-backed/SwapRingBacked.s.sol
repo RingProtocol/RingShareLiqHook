@@ -26,18 +26,23 @@ contract SwapRingBacked is RingBackedBase {
         int256 specified = vm.envInt("AMOUNT_SPECIFIED");
         uint256 limit = vm.envUint("AMOUNT_LIMIT");
         uint256 deadline = vm.envUint("DEADLINE");
-        (uint256 ri, uint256 ro, RingLPPlanner.Plan memory p) = hook.quote(key, forward, specified);
-        console2.log("Ring input/output", ri, ro);
-        console2.log("LP input/output", p.amountIn, p.amountOut);
+        bool syncOnly = vm.envOr("SYNC_ONLY", false);
+        uint160 priceLimit = uint160(
+            vm.envOr(
+                "SQRT_PRICE_LIMIT_X96", uint256(forward ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1)
+            )
+        );
+        if (!syncOnly) {
+            (uint256 ri, uint256 ro, RingLPPlanner.Plan memory p) = hook.quote(key, forward, specified);
+            console2.log("Ring input/output", ri, ro);
+            console2.log("LP input/output", p.amountIn, p.amountOut);
+        }
         uint256 budget = specified < 0 ? SafeCast.toUint256(-specified) : limit;
         vm.startBroadcast();
         IERC20(Currency.unwrap(forward ? key.currency0 : key.currency1)).forceApprove(address(router), budget);
-        BalanceDelta d = router.swap(
-            key,
-            SwapParams(forward, specified, forward ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1),
-            limit,
-            deadline
-        );
+        SwapParams memory params = SwapParams(forward, specified, priceLimit);
+        BalanceDelta d =
+            syncOnly ? router.syncPrice(key, params, limit, deadline) : router.swap(key, params, limit, deadline);
         vm.stopBroadcast();
         console2.log("amount0", d.amount0());
         console2.log("amount1", d.amount1());

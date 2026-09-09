@@ -40,6 +40,8 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
     using TransientStateLibrary for IPoolManager;
     uint256 public constant MAX_ROUNDING_LOSS = 8; // raw token units per currency per successful swap
     uint256 public constant MIN_BUFFER = 16;
+    uint256 public constant MAX_SPOT_DEVIATION_BPS = 500;
+    bytes32 public constant SYNC_SWAP = keccak256("RingBackedLiqHook.sync");
     bytes32 private constant LP_SALT = keccak256("RingBackedLiqHook.position");
     IFewFactory public immutable fewFactory;
     ISwapV2Factory public immutable fewV2Factory;
@@ -55,6 +57,7 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
     uint256 private _balance0Before;
     uint256 private _balance1Before;
     uint256 private _activeDonationLimit;
+    bool private _syncing;
 
     error InvalidPool();
     error InvalidRoute();
@@ -67,6 +70,7 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
     error PriceLimitExceeded();
     error UnexpectedLiquidity();
     error RoundingLossExceeded();
+    error QuoteDeviationExceeded();
     error InvalidRecipient();
     error RenounceOwnershipDisabled();
     event PoolCreated(PoolId indexed poolId);
@@ -75,6 +79,7 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
     event RingBackedSwap(
         PoolId indexed poolId, bool zeroForOne, uint256 amountIn, uint256 amountOut, uint256 loss0, uint256 loss1
     );
+    event PriceSyncSwap(PoolId indexed poolId, bool zeroForOne, uint256 amountIn, uint256 amountOut);
 
     constructor(IPoolManager manager, IFewFactory few, ISwapV2Factory dex, address owner_)
         BaseHook(manager)
@@ -167,6 +172,17 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
         return (_path, _pairs);
     }
 
+    /// @notice Compares the v4 permanent LP's marginal quote with the current Ring route.
+    /// @dev The allowed band includes FewV2's 30 bps fee for every hop plus the configured drift tolerance.
+    function getSpotDeviationBps(bool forward) external view returns (uint256 deviationBps, uint256 allowedBps) {
+        if (!initialized) revert InvalidPool();
+        (address[] memory tokens, address[] memory pairs) = _route(forward);
+        uint128 baseLiquidity = poolManager.getLiquidity(configuredPoolId);
+        if (baseLiquidity == 0) revert UnexpectedLiquidity();
+        (uint160 start,,,) = poolManager.getSlot0(configuredPoolId);
+        return _spotDeviationBps(start, baseLiquidity, forward, _key.tickSpacing, tokens, pairs);
+    }
+
     /// @notice Nonbinding plan including the real LP amounts (within 2 raw units in the user's favour).
     /// @dev Reverts for unavailable routes, insufficient rounding buffer, or unrepresentable prices.
     function quote(PoolKey calldata key, bool zeroForOne, int256 amountSpecified)
@@ -208,6 +224,9 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
         if (baseLiquidity == 0) revert UnexpectedLiquidity();
         (uint160 start,,,) = poolManager.getSlot0(configuredPoolId);
         (ringIn, ringOut, p) = _findHybridPlan(start, baseLiquidity, specified, forward, key.tickSpacing, tokens, pairs);
+        // A self-funded Ring JIT plan already couples both venues. Only guard the base-only
+        // fallback, which would otherwise expose a stale permanent-LP price after Ring moves.
+        if (p.liquidity == 0) _requireRingAligned(start, baseLiquidity, forward, key.tickSpacing, tokens, pairs);
     }
 
     function _beforeInitialize(address, PoolKey calldata, uint160) internal pure override returns (bytes4) {
@@ -234,13 +253,18 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
         return IHooks.beforeRemoveLiquidity.selector;
     }
 
-    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         _requirePool(key);
         jitLockFor(configuredPoolId).enter();
+        if (hookData.length == 32 && abi.decode(hookData, (bytes32)) == SYNC_SWAP) {
+            if (!live) revert PoolNotLive();
+            _syncing = true;
+            return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        }
         (uint256 ringIn, uint256 ringOut, RingLPPlanner.Plan memory p) =
             _quote(key, params.zeroForOne, params.amountSpecified);
         if (params.zeroForOne ? params.sqrtPriceLimitX96 >= p.end : params.sqrtPriceLimitX96 <= p.end) {
@@ -278,6 +302,20 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
         returns (bytes4, int128)
     {
         _requirePool(key);
+        if (_syncing) {
+            int128 syncInput = params.zeroForOne ? delta.amount0() : delta.amount1();
+            int128 syncOutput = params.zeroForOne ? delta.amount1() : delta.amount0();
+            if (syncInput >= 0 || syncOutput <= 0) revert UnexpectedFill();
+            delete _syncing;
+            jitLockFor(configuredPoolId).clear();
+            emit PriceSyncSwap(
+                configuredPoolId,
+                params.zeroForOne,
+                SafeCast.toUint256(-int256(syncInput)),
+                SafeCast.toUint256(int256(syncOutput))
+            );
+            return (IHooks.afterSwap.selector, 0);
+        }
         RingLPPlanner.Plan memory p = _active;
         if (p.start == 0) revert UnexpectedFill();
         int128 input = params.zeroForOne ? delta.amount0() : delta.amount1();
@@ -388,6 +426,40 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
             ringIn = 0;
             ringOut = 0;
         }
+    }
+
+    function _requireRingAligned(
+        uint160 start,
+        uint128 baseLiquidity,
+        bool forward,
+        int24 spacing,
+        address[] memory tokens,
+        address[] memory pairs
+    ) private view {
+        (uint256 deviationBps, uint256 allowedBps) =
+            _spotDeviationBps(start, baseLiquidity, forward, spacing, tokens, pairs);
+        if (deviationBps > allowedBps) revert QuoteDeviationExceeded();
+    }
+
+    function _spotDeviationBps(
+        uint160 start,
+        uint128 baseLiquidity,
+        bool forward,
+        int24 spacing,
+        address[] memory tokens,
+        address[] memory pairs
+    ) private view returns (uint256 deviationBps, uint256 allowedBps) {
+        (uint256 reserveIn,,) = _reserves(pairs[0], tokens[0], tokens[1]);
+        uint256 probe = reserveIn / 100_000;
+        if (probe == 0 || probe > uint256(uint128(type(int128).max))) revert QuoteDeviationExceeded();
+        uint256[] memory ringAmounts = _amounts(tokens, pairs, -SafeCast.toInt256(probe));
+        (, uint256 v4Input, uint256 v4Output) =
+            RingLPPlanner.simulate(start, baseLiquidity, -SafeCast.toInt256(probe), forward, spacing);
+        uint256 ringOutput = ringAmounts[ringAmounts.length - 1];
+        if (v4Input != probe || ringOutput == 0) revert QuoteDeviationExceeded();
+        uint256 difference = v4Output > ringOutput ? v4Output - ringOutput : ringOutput - v4Output;
+        deviationBps = (difference * 10_000 + ringOutput - 1) / ringOutput;
+        allowedBps = pairs.length * 30 + MAX_SPOT_DEVIATION_BPS;
     }
 
     function _inputQuantum(address[] memory tokens, address[] memory pairs, uint256 output)
