@@ -53,7 +53,11 @@ contract FalseApprovalToken is IERC20 {
 }
 
 contract RingShareLiqHookApprovalHarness is RingShareLiqHook {
-    constructor() RingShareLiqHook(IPoolManager(address(1)), uint32(500_000), msg.sender, IFewFactory(address(1)), IWETH9(address(0))) {}
+    constructor()
+        RingShareLiqHook(
+            IPoolManager(address(1)), uint32(500_000), msg.sender, IFewFactory(address(1)), IWETH9(address(0))
+        )
+    {}
 
     function validateHookAddress(BaseHook) internal pure override {}
 

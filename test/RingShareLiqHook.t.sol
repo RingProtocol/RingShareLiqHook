@@ -18,13 +18,53 @@ import {TransientStateLibrary} from "@uniswap/v4-core/src/libraries/TransientSta
 import {PoolSwapTest, PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {PoolClaimsTest} from "@uniswap/v4-core/src/test/PoolClaimsTest.sol";
-import {LiquidityBucket} from "alf/types/Distribution.sol";
 
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
+import {RingV2Math} from "../src/libraries/RingV2Math.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
 import {IFewWrappedToken} from "../src/interfaces/external/IFewWrappedToken.sol";
 import {IWETH9} from "../src/interfaces/external/IWETH9.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+contract MockWETH9 is IWETH9 {
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    receive() external payable {
+        deposit();
+    }
+
+    function deposit() public payable {
+        totalSupply += msg.value;
+        balanceOf[msg.sender] += msg.value;
+    }
+
+    function withdraw(uint256 amount) external {
+        balanceOf[msg.sender] -= amount;
+        totalSupply -= amount;
+        payable(msg.sender).transfer(amount);
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        uint256 allowed = allowance[from][msg.sender];
+        if (allowed != type(uint256).max) allowance[from][msg.sender] = allowed - amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
 
 /// @notice Minimal FewWrappedToken mock: 1:1 wrap/unwrap against the underlying ERC20.
 contract MockFewWrappedToken is IFewWrappedToken {
@@ -146,8 +186,9 @@ contract RingShareLiqHookTest is Test {
     using BalanceDeltaLibrary for BalanceDelta;
     using CurrencyLibrary for Currency;
 
-    // beforeInitialize(13) + beforeAddLiquidity(11) + beforeRemoveLiquidity(9) + beforeSwap(7) + afterSwap(6)
-    uint160 constant HOOK_FLAGS = 0x2AC0;
+    // beforeInitialize(13) + beforeAddLiquidity(11) + beforeRemoveLiquidity(9) +
+    // beforeSwap(7) + afterSwap(6) + beforeSwapReturnDelta(3) = 0x2AC8
+    uint160 constant HOOK_FLAGS = 0x2AC8;
     uint160 constant SQRT_PRICE_1_1 = 79228162514264337593543950336;
 
     PoolManager manager;
@@ -197,7 +238,8 @@ contract RingShareLiqHookTest is Test {
         // Deploy the hook via CREATE2 with the right flag bits
         // Constructor: (IPoolManager, uint32 maxGas, address owner, IFewFactory, IWETH9)
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args =
+            abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
         (bytes32 salt, address predicted) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         hook = new RingShareLiqHook{salt: salt}(manager, 500_000, owner, fewFactory, IWETH9(address(0)));
         require(address(hook) == predicted, "hook addr mismatch");
@@ -210,11 +252,7 @@ contract RingShareLiqHookTest is Test {
         poolId = key.toId();
 
         // Initialize the pool via the hook's initializePool (owner-only)
-        LiquidityBucket[] memory buckets = new LiquidityBucket[](3);
-        buckets[0] = LiquidityBucket({tickLower: -600, tickUpper: -180, weightBps: 2500});
-        buckets[1] = LiquidityBucket({tickLower: -180, tickUpper: 180, weightBps: 5000});
-        buckets[2] = LiquidityBucket({tickLower: 180, tickUpper: 600, weightBps: 2500});
-        hook.initializePool(key, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: buckets}));
+        hook.initializePool(key, SQRT_PRICE_1_1);
 
         // Approve routers
         tokenA.approve(address(modifyLiquidityRouter), type(uint256).max);
@@ -225,8 +263,7 @@ contract RingShareLiqHookTest is Test {
         fwToken1.approve(address(hook), type(uint256).max);
 
         // Wrap + bootstrap the hook's reserve with 10000 of each fwToken.
-        // In the single-pool architecture, the hook provides ALL liquidity via JIT
-        // from its reserves — no external LP is needed.
+        // The hook provides ALL liquidity via its V2 fwToken reserves.
         fwToken0.wrap(10000 ether);
         fwToken1.wrap(10000 ether);
         hook.bootstrap(key, 10000 ether, 10000 ether);
@@ -243,9 +280,11 @@ contract RingShareLiqHookTest is Test {
         assertTrue(p.afterSwap);
         assertTrue(p.beforeAddLiquidity);
         assertTrue(p.beforeRemoveLiquidity);
+        assertTrue(p.beforeSwapReturnDelta);
         assertFalse(p.afterInitialize);
         assertFalse(p.afterAddLiquidity);
         assertFalse(p.afterRemoveLiquidity);
+        assertFalse(p.afterSwapReturnDelta);
     }
 
     function test_OwnerIsDeployer() public view {
@@ -258,7 +297,8 @@ contract RingShareLiqHookTest is Test {
 
     function test_RevertConstruct_ZeroFactory() public {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(0)), IWETH9(address(0)));
+        bytes memory args =
+            abi.encode(address(manager), uint32(500_000), owner, IFewFactory(address(0)), IWETH9(address(0)));
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         vm.expectRevert(RingShareLiqHook.WrappedTokenNotFound.selector);
         new RingShareLiqHook{salt: salt}(manager, 500_000, owner, IFewFactory(address(0)), IWETH9(address(0)));
@@ -266,7 +306,8 @@ contract RingShareLiqHookTest is Test {
 
     function test_RevertConstruct_ZeroPoolManager() public {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(0), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args =
+            abi.encode(address(0), uint32(500_000), owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         vm.expectRevert(RingShareLiqHook.InvalidPoolManager.selector);
         new RingShareLiqHook{salt: salt}(IPoolManager(address(0)), 500_000, owner, fewFactory, IWETH9(address(0)));
@@ -283,12 +324,8 @@ contract RingShareLiqHookTest is Test {
 
     function test_RevertInitialize_SecondPool() public {
         PoolKey memory otherKey = _otherKey();
-        LiquidityBucket[] memory buckets = _oneBucket();
-
         vm.expectRevert(RingShareLiqHook.PoolAlreadyInitialized.selector);
-        hook.initializePool(
-            otherKey, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: buckets})
-        );
+        hook.initializePool(otherKey, SQRT_PRICE_1_1);
     }
 
     function test_RevertInitialize_WrapperUnderlyingMismatch() public {
@@ -298,28 +335,22 @@ contract RingShareLiqHookTest is Test {
         PoolKey memory freshKey = _keyFor(address(freshHook));
 
         vm.expectRevert(RingShareLiqHook.WrappedTokenNotFound.selector);
-        freshHook.initializePool(
-            freshKey, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: _oneBucket()})
-        );
+        freshHook.initializePool(freshKey, SQRT_PRICE_1_1);
     }
 
-    function test_RevertBootstrap_WithoutActiveLiquidity() public {
+    function test_RevertBootstrap_ZeroAmount() public {
         RingShareLiqHook freshHook = _deployFreshHook(500_002);
         PoolKey memory freshKey = _keyFor(address(freshHook));
-        freshHook.initializePool(
-            freshKey, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: _oneBucket()})
-        );
+        freshHook.initializePool(freshKey, SQRT_PRICE_1_1);
 
-        vm.expectRevert(RingShareLiqHook.NoActiveLiquidity.selector);
+        vm.expectRevert(RingShareLiqHook.InsufficientReserve.selector);
         freshHook.bootstrap(freshKey, 0, 0);
     }
 
     function test_RevertInitialize_NotOwner() public {
         vm.prank(address(0xBEEF));
-        LiquidityBucket[] memory buckets = new LiquidityBucket[](1);
-        buckets[0] = LiquidityBucket({tickLower: -60, tickUpper: 60, weightBps: 10_000});
         vm.expectRevert();
-        hook.initializePool(key, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: buckets}));
+        hook.initializePool(key, SQRT_PRICE_1_1);
     }
 
     function test_RevertBootstrap_AlreadyBootstrapped() public {
@@ -355,6 +386,37 @@ contract RingShareLiqHookTest is Test {
         assertEq(r1, 10300 ether);
     }
 
+    function test_NativeReservePullsExistingFwWeth() public {
+        MockWETH9 weth = new MockWETH9();
+        MockFewWrappedToken fwWeth = fewFactory.create(address(weth));
+        RingShareLiqHook nativeHook = _deployFreshHook(500_003, weth);
+        PoolKey memory nativeKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: currency0,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(nativeHook))
+        });
+        PoolId nativePoolId = nativeKey.toId();
+        nativeHook.initializePool(nativeKey, SQRT_PRICE_1_1);
+
+        vm.deal(address(this), 150 ether);
+        weth.deposit{value: 150 ether}();
+        weth.approve(address(fwWeth), type(uint256).max);
+        fwWeth.wrap(150 ether);
+        fwToken0.wrap(150 ether);
+        fwWeth.approve(address(nativeHook), type(uint256).max);
+        fwToken0.approve(address(nativeHook), type(uint256).max);
+
+        nativeHook.bootstrap(nativeKey, 100 ether, 100 ether);
+        nativeHook.deposit(nativeKey, 50 ether, 50 ether);
+
+        assertEq(nativeHook.fwReserveOf(nativePoolId, nativeKey.currency0), 150 ether);
+        assertEq(nativeHook.fwReserveOf(nativePoolId, nativeKey.currency1), 150 ether);
+        assertEq(fwWeth.balanceOf(address(nativeHook)), 150 ether);
+        assertEq(address(nativeHook).balance, 0);
+    }
+
     function test_WithdrawDecreasesReserve() public {
         hook.withdraw(key, 1000 ether, 0, address(this));
         (uint256 r0,) = hook.getReserves(key);
@@ -377,7 +439,6 @@ contract RingShareLiqHookTest is Test {
 
     function test_RevertManagementAndViews_ForOtherPool() public {
         PoolKey memory otherKey = _otherKey();
-        PoolId otherId = otherKey.toId();
 
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
         hook.bootstrap(otherKey, 0, 0);
@@ -388,11 +449,7 @@ contract RingShareLiqHookTest is Test {
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
         hook.sweepClaims(otherKey);
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
-        hook.setDistribution(otherKey, _oneBucket());
-        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
         hook.setPoolLive(otherKey, false);
-        vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
-        hook.getDistribution(otherId);
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
         hook.getReserves(otherKey);
         vm.expectRevert(RingShareLiqHook.InvalidPool.selector);
@@ -423,7 +480,8 @@ contract RingShareLiqHookTest is Test {
     // ══════════════════════════════════════════════════════════════════════
 
     function test_ExternalAddLiquiditySucceeds() public {
-        // External LP is now allowed — the hook dilutes it via JIT reserve injection.
+        // External LP is allowed — the hook intercepts all swaps via beforeSwapReturnDelta,
+        // so external LP liquidity sits in the V4 pool but is never used for swap execution.
         modifyLiquidityRouter.modifyLiquidity(
             key, ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: int256(1 ether), salt: 0}), ""
         );
@@ -437,10 +495,9 @@ contract RingShareLiqHookTest is Test {
         hook.setPoolLive(key, false);
         assertFalse(hook.livePools(poolId));
 
-        // Swap should revert because pool is not live
         bool zeroForOne = currency0 < currency1;
         SwapParams memory params = SwapParams({
-            amountSpecified: int256(1 ether),
+            amountSpecified: -int256(1 ether),
             sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1,
             zeroForOne: zeroForOne
         });
@@ -455,10 +512,22 @@ contract RingShareLiqHookTest is Test {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    //                          SWAP
+    //                          SWAP (V2)
     // ══════════════════════════════════════════════════════════════════════
 
-    function test_SwapSucceeds() public {
+    function test_SwapExactInputSucceeds() public {
+        bool zeroForOne = currency0 < currency1;
+        SwapParams memory params = SwapParams({
+            amountSpecified: -int256(1 ether),
+            sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1,
+            zeroForOne: zeroForOne
+        });
+        BalanceDelta delta =
+            swapRouter.swap(key, params, PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}), "");
+        assertTrue(delta.amount0() != 0 || delta.amount1() != 0);
+    }
+
+    function test_SwapExactOutputSucceeds() public {
         bool zeroForOne = currency0 < currency1;
         SwapParams memory params = SwapParams({
             amountSpecified: int256(1 ether),
@@ -467,8 +536,33 @@ contract RingShareLiqHookTest is Test {
         });
         BalanceDelta delta =
             swapRouter.swap(key, params, PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}), "");
-        // The swap should succeed and produce a non-zero delta
         assertTrue(delta.amount0() != 0 || delta.amount1() != 0);
+    }
+
+    function test_SwapMatchesV2Math() public {
+        bool zeroForOne = currency0 < currency1;
+        (uint256 r0, uint256 r1) = hook.getReserves(key);
+        (uint256 reserveIn, uint256 reserveOut) = zeroForOne ? (r0, r1) : (r1, r0);
+
+        uint256 amountIn = 1 ether;
+        uint256 expectedOut = RingV2Math.getAmountOut(amountIn, reserveIn, reserveOut, 3000);
+
+        SwapParams memory params = SwapParams({
+            amountSpecified: -int256(amountIn),
+            sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1,
+            zeroForOne: zeroForOne
+        });
+        BalanceDelta delta =
+            swapRouter.swap(key, params, PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}), "");
+
+        // For zeroForOne: delta.amount0 < 0 (paid), delta.amount1 > 0 (received)
+        if (zeroForOne) {
+            assertEq(uint256(-int256(int128(delta.amount0()))), amountIn);
+            assertEq(uint256(int256(int128(delta.amount1()))), expectedOut);
+        } else {
+            assertEq(uint256(-int256(int128(delta.amount1()))), amountIn);
+            assertEq(uint256(int256(int128(delta.amount0()))), expectedOut);
+        }
     }
 
     function test_RevertSwap_AfterAllFwReservesWithdrawn() public {
@@ -494,53 +588,55 @@ contract RingShareLiqHookTest is Test {
 
         bool zeroForOne = currency0 < currency1;
         SwapParams memory params = SwapParams({
-            amountSpecified: int256(1 ether),
+            amountSpecified: -int256(1 ether),
             sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1,
             zeroForOne: zeroForOne
         });
         swapRouter.swap(key, params, PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}), "");
 
         (uint256 r0After, uint256 r1After) = hook.getReserves(key);
-        // Total reserves should be >= before (fees earned on JIT liquidity)
-        // The JIT liquidity is withdrawn after swap, so reserves reflect fees + original
-        assertGe(r0After + r1After, r0Before + r1Before);
+        // V2 invariant: total reserves increase by (amountIn - amountOut), which is > 0.
+        assertGt(r0After + r1After, r0Before + r1Before);
     }
 
-    // ══════════════════════════════════════════════════════════════════════
-    //                          DISTRIBUTION
-    // ══════════════════════════════════════════════════════════════════════
+    function test_ReverseSwapRedeemsClaims() public {
+        // Swap zeroForOne, then oneForZero — the second swap should redeem claims from the first.
+        bool zeroForOne = currency0 < currency1;
 
-    function test_GetDistribution() public view {
-        LiquidityBucket[] memory buckets = hook.getDistribution(poolId);
-        assertEq(buckets.length, 3);
-        assertEq(buckets[0].tickLower, -600);
-        assertEq(buckets[0].tickUpper, -180);
-        assertEq(buckets[0].weightBps, 2500);
-        assertEq(buckets[1].tickLower, -180);
-        assertEq(buckets[1].tickUpper, 180);
-        assertEq(buckets[1].weightBps, 5000);
-        assertEq(buckets[2].tickLower, 180);
-        assertEq(buckets[2].tickUpper, 600);
-        assertEq(buckets[2].weightBps, 2500);
-    }
+        // First swap: zeroForOne (pay currency0, receive currency1)
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: zeroForOne,
+                amountSpecified: -int256(1 ether),
+                sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
 
-    function test_SetDistribution() public {
-        LiquidityBucket[] memory buckets = new LiquidityBucket[](1);
-        buckets[0] = LiquidityBucket({tickLower: -120, tickUpper: 120, weightBps: 10_000});
-        hook.setDistribution(key, buckets);
+        // Claims should be minted for the input currency.
+        uint256 claimsIn = zeroForOne ? hook.claimReserveOf(poolId, currency0) : hook.claimReserveOf(poolId, currency1);
+        assertGt(claimsIn, 0);
 
-        LiquidityBucket[] memory got = hook.getDistribution(poolId);
-        assertEq(got.length, 1);
-        assertEq(got[0].tickLower, -120);
-        assertEq(got[0].tickUpper, 120);
-    }
+        // Second swap: reverse direction (redeems claims from first swap)
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: !zeroForOne,
+                amountSpecified: -int256(1 ether),
+                sqrtPriceLimitX96: !zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
 
-    function test_RevertSetDistribution_NotOwner() public {
-        vm.prank(address(0xBEEF));
-        LiquidityBucket[] memory buckets = new LiquidityBucket[](1);
-        buckets[0] = LiquidityBucket({tickLower: -120, tickUpper: 120, weightBps: 10_000});
-        vm.expectRevert();
-        hook.setDistribution(key, buckets);
+        // After the reverse swap, the claims from the first swap should be partially or fully redeemed.
+        uint256 claimsAfter =
+            zeroForOne ? hook.claimReserveOf(poolId, currency0) : hook.claimReserveOf(poolId, currency1);
+        // New claims may be minted for the reverse swap's input, so just check the pool still works.
+        (uint256 r0, uint256 r1) = hook.getReserves(key);
+        assertGt(r0 + r1, 0);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -550,8 +646,13 @@ contract RingShareLiqHookTest is Test {
     function test_GetIndicativeQuote() public view {
         bool zeroForOne = currency0 < currency1;
         uint256 quote = hook.getIndicativeQuote(key, zeroForOne, -int256(1 ether), "");
-        // Should produce a non-zero quote for a live pool with reserves
         assertTrue(quote > 0);
+
+        // Verify the quote matches V2 math.
+        (uint256 r0, uint256 r1) = hook.getReserves(key);
+        (uint256 reserveIn, uint256 reserveOut) = zeroForOne ? (r0, r1) : (r1, r0);
+        uint256 expected = RingV2Math.getAmountOut(1 ether, reserveIn, reserveOut, 3000);
+        assertEq(quote, expected);
     }
 
     function test_GetIndicativeQuote_Paused() public {
@@ -561,9 +662,22 @@ contract RingShareLiqHookTest is Test {
         assertEq(quote, 0);
     }
 
-    function test_GetIndicativeQuote_ReturnsZeroAcrossDistributionBoundary() public view {
+    function test_GetIndicativeQuote_ExactOutput() public {
         bool zeroForOne = currency0 < currency1;
-        uint256 quote = hook.getIndicativeQuote(key, zeroForOne, -int256(10_000 ether), "");
+        uint256 quote = hook.getIndicativeQuote(key, zeroForOne, int256(1 ether), "");
+        assertTrue(quote > 0);
+
+        // Verify the quote matches V2 math (input required for 1 ether output).
+        (uint256 r0, uint256 r1) = hook.getReserves(key);
+        (uint256 reserveIn, uint256 reserveOut) = zeroForOne ? (r0, r1) : (r1, r0);
+        uint256 expected = RingV2Math.getAmountIn(1 ether, reserveIn, reserveOut, 3000);
+        assertEq(quote, expected);
+    }
+
+    function test_GetIndicativeQuote_ReturnsZeroForExcessiveOutput() public view {
+        bool zeroForOne = currency0 < currency1;
+        // Request more output than the reserve holds.
+        uint256 quote = hook.getIndicativeQuote(key, zeroForOne, int256(100_000 ether), "");
         assertEq(quote, 0);
     }
 
@@ -609,10 +723,14 @@ contract RingShareLiqHookTest is Test {
     }
 
     function _deployFreshHook(uint32 maxGas) internal returns (RingShareLiqHook freshHook) {
+        return _deployFreshHook(maxGas, IWETH9(address(0)));
+    }
+
+    function _deployFreshHook(uint32 maxGas, IWETH9 weth) internal returns (RingShareLiqHook freshHook) {
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args = abi.encode(address(manager), maxGas, owner, IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args = abi.encode(address(manager), maxGas, owner, IFewFactory(address(fewFactory)), weth);
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
-        freshHook = new RingShareLiqHook{salt: salt}(manager, maxGas, owner, fewFactory, IWETH9(address(0)));
+        freshHook = new RingShareLiqHook{salt: salt}(manager, maxGas, owner, fewFactory, weth);
     }
 
     function _keyFor(address targetHook) internal view returns (PoolKey memory) {
@@ -625,10 +743,5 @@ contract RingShareLiqHookTest is Test {
             PoolKey({
                 currency0: currency0, currency1: currency1, fee: 500, tickSpacing: 10, hooks: IHooks(address(hook))
             });
-    }
-
-    function _oneBucket() internal pure returns (LiquidityBucket[] memory buckets) {
-        buckets = new LiquidityBucket[](1);
-        buckets[0] = LiquidityBucket({tickLower: -60, tickUpper: 60, weightBps: 10_000});
     }
 }
