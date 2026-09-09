@@ -9,8 +9,9 @@ per-hop fee remains and the hook adds no surcharge. Only full-range external pos
 accepted; unmatched orders safely execute against the permanent position without touching Ring.
 An owner-funded rounding reserve has a hard per-swap loss cap of 8 raw units per currency.
 
-See [design, limits, and Sepolia scripts](docs/ring-backed-lp-design.md). The implementation has
-local fixture tests and has been exercised against a live Sepolia Ring pair and Uniswap v4 pool.
+See [design, limits, and Sepolia scripts](docs/ring-backed-lp-design.md) and the
+[Chinese mechanism overview](docs/ring-backed-jit-liquidity.zh-CN.md). The implementation has local
+fixture tests and has been exercised against a live Sepolia Ring pair and Uniswap v4 pool.
 
 ## Original owner-reserve JIT LP
 
