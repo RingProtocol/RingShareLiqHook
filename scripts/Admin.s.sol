@@ -12,13 +12,12 @@ import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 import {RingShareBase} from "./base/RingShareBase.sol";
 
 /// @notice Owner operations on a live hook, selected by the `ACTION` env var.
-/// @dev    All actions are owner-gated on the hook and revert while a JIT cycle is in flight.
+/// @dev    All actions are owner-gated on the hook.
 ///
 /// Actions and their extra env vars:
 ///   deposit         TOKEN_ADDR (underlying currency), AMOUNT (fwToken pulled from broadcaster)
 ///   withdraw        TOKEN_ADDR, AMOUNT, TO (default: broadcaster)
-///   setPoolLive     LIVE (bool) — pause/resume JIT service; swaps revert `PoolNotLive` while false
-///   setDistribution LADDERED (bool, default false -> single full-range bucket)
+///   setPoolLive     LIVE (bool) — pause/resume swap service; swaps revert `PoolNotLive` while false
 ///   sweepClaims     — redeem outstanding ERC-6909 claims back into the reserve
 ///
 /// Common env: HOOK_ADDR, TOKEN_A_ADDR, TOKEN_B_ADDR, FEE, TICK_SPACING
@@ -45,14 +44,11 @@ contract Admin is RingShareBase {
             bool live = vm.envBool("LIVE");
             hook.setPoolLive(key, live);
             console2.log("setPoolLive:", live);
-        } else if (a == keccak256("setDistribution")) {
-            hook.setDistribution(key, _distribution(key.tickSpacing));
-            console2.log("distribution updated");
         } else if (a == keccak256("sweepClaims")) {
             hook.sweepClaims(key);
             console2.log("claims swept into reserve");
         } else {
-            revert("unknown ACTION; expected deposit|withdraw|setPoolLive|setDistribution|sweepClaims");
+            revert("unknown ACTION; expected deposit|withdraw|setPoolLive|sweepClaims");
         }
         vm.stopBroadcast();
 

@@ -27,7 +27,7 @@ import {IWETH9} from "../src/interfaces/external/IWETH9.sol";
 import {WETH9} from "./DeployWETH9.s.sol";
 import {TestToken, MockFewFactory} from "./AnvilForkTest.s.sol";
 
-import {LiquidityBucket} from "alf/types/Distribution.sol";
+import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 
 contract AnvilForkTestEth is Script {
     using PoolIdLibrary for PoolKey;
@@ -88,11 +88,7 @@ contract AnvilForkTestEth is Script {
             PoolKey({currency0: c0, currency1: c1, fee: 3000, tickSpacing: 60, hooks: IHooks(hookAddr)});
         PoolId poolId = key.toId();
 
-        LiquidityBucket[] memory buckets = new LiquidityBucket[](3);
-        buckets[0] = LiquidityBucket({tickLower: -600, tickUpper: -180, weightBps: 2500});
-        buckets[1] = LiquidityBucket({tickLower: -180, tickUpper: 180, weightBps: 5000});
-        buckets[2] = LiquidityBucket({tickLower: 180, tickUpper: 600, weightBps: 2500});
-        hook.initializePool(key, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: buckets}));
+        hook.initializePool(key, SQRT_PRICE_1_1);
 
         uint256 fundedAmount = 102 ether;
         weth9.deposit{value: fundedAmount}();

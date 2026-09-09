@@ -10,13 +10,13 @@ import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 
 import {RingShareBase} from "./base/RingShareBase.sol";
 
-/// @notice Initialize the hook's pool with an initial price and liquidity distribution.
+/// @notice Initialize the hook's pool with an initial price.
 /// @dev    Owner-only. The pool is created NOT live: swaps revert with `PoolNotLive` until
 ///         `bootstrap` seeds the reserve. Both currencies must have fwTokens registered in the
 ///         FewFactory (`WrappedTokenNotFound` otherwise) and must not be native ETH.
 ///
 /// Env: HOOK_ADDR, TOKEN_A_ADDR, TOKEN_B_ADDR, FEE (default 3000), TICK_SPACING (default 60),
-///      SQRT_PRICE_X96 (default 1:1), LADDERED (default false -> single full-range bucket)
+///      SQRT_PRICE_X96 (default 1:1)
 ///
 /// Usage:
 ///   forge script scripts/InitializePool.s.sol:InitializePool \
@@ -29,11 +29,8 @@ contract InitializePool is RingShareBase {
         PoolKey memory key = _poolKey(address(hook));
         uint160 sqrtPriceX96 = uint160(vm.envOr("SQRT_PRICE_X96", uint256(SQRT_PRICE_1_1)));
 
-        RingShareLiqHook.PoolConfig memory config =
-            RingShareLiqHook.PoolConfig({sqrtPriceX96: sqrtPriceX96, distribution: _distribution(key.tickSpacing)});
-
         vm.startBroadcast();
-        tick = hook.initializePool(key, config);
+        tick = hook.initializePool(key, sqrtPriceX96);
         vm.stopBroadcast();
 
         _logKey(key);

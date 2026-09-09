@@ -16,7 +16,6 @@ import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
-import {LiquidityBucket, activeLiquidity} from "alf/types/Distribution.sol";
 
 import {RingShareLiqHook} from "../src/hooks/RingShareLiqHook.sol";
 import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
@@ -132,7 +131,9 @@ contract RingShareLiqInvariantTest is StdInvariant, Test {
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
 
-    uint160 internal constant HOOK_FLAGS = 0x2AC0;
+    // beforeInitialize(13) + beforeAddLiquidity(11) + beforeRemoveLiquidity(9) +
+    // beforeSwap(7) + afterSwap(6) + beforeSwapReturnDelta(3) = 0x2AC8
+    uint160 internal constant HOOK_FLAGS = 0x2AC8;
     uint160 internal constant SQRT_PRICE_1_1 = 79228162514264337593543950336;
 
     PoolManager internal manager;
@@ -168,8 +169,9 @@ contract RingShareLiqInvariantTest is StdInvariant, Test {
         token1.approve(address(fwToken1), type(uint256).max);
 
         bytes memory creationCode = type(RingShareLiqHook).creationCode;
-        bytes memory args =
-            abi.encode(address(manager), uint32(500_000), address(this), IFewFactory(address(fewFactory)), IWETH9(address(0)));
+        bytes memory args = abi.encode(
+            address(manager), uint32(500_000), address(this), IFewFactory(address(fewFactory)), IWETH9(address(0))
+        );
         (bytes32 salt,) = HookMiner.mine(address(this), creationCode, args, HOOK_FLAGS, 10_000_000);
         hook = new RingShareLiqHook{salt: salt}(manager, 500_000, address(this), fewFactory, IWETH9(address(0)));
 
@@ -177,11 +179,7 @@ contract RingShareLiqInvariantTest is StdInvariant, Test {
             currency0: currency0, currency1: currency1, fee: 3000, tickSpacing: 60, hooks: IHooks(address(hook))
         });
         poolId = key.toId();
-        LiquidityBucket[] memory buckets = new LiquidityBucket[](3);
-        buckets[0] = LiquidityBucket({tickLower: -600, tickUpper: -180, weightBps: 2500});
-        buckets[1] = LiquidityBucket({tickLower: -180, tickUpper: 180, weightBps: 5000});
-        buckets[2] = LiquidityBucket({tickLower: 180, tickUpper: 600, weightBps: 2500});
-        hook.initializePool(key, RingShareLiqHook.PoolConfig({sqrtPriceX96: SQRT_PRICE_1_1, distribution: buckets}));
+        hook.initializePool(key, SQRT_PRICE_1_1);
 
         fwToken0.wrap(20_000 ether);
         fwToken1.wrap(20_000 ether);
@@ -227,11 +225,11 @@ contract RingShareLiqInvariantTest is StdInvariant, Test {
         assertEq(manager.balanceOf(address(hook), currency1.toId()), hook.claimReserveOf(poolId, currency1));
     }
 
-    function invariant_EmptyActiveLiquidityCannotMovePrice() public {
+    function invariant_EmptyReservesCannotMovePrice() public {
         if (!hook.livePools(poolId)) return;
-        (uint160 sqrtPriceX96, int24 tick,,) = IPoolManager(address(manager)).getSlot0(poolId);
+        (uint160 sqrtPriceX96,,,) = IPoolManager(address(manager)).getSlot0(poolId);
         (uint256 reserve0, uint256 reserve1) = hook.getEffectiveLiquidity(key);
-        if (activeLiquidity(hook.getDistribution(poolId), sqrtPriceX96, tick, reserve0, reserve1) != 0) return;
+        if (reserve0 != 0 && reserve1 != 0) return;
 
         (bool ok,) = address(swapRouter)
             .call(

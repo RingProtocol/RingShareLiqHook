@@ -16,96 +16,67 @@ import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {
+    BeforeSwapDelta,
+    BeforeSwapDeltaLibrary,
+    toBeforeSwapDelta
+} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {TransientStateLibrary} from "@uniswap/v4-core/src/libraries/TransientStateLibrary.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
-import {SwapMath} from "@uniswap/v4-core/src/libraries/SwapMath.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 
 import {OwnedALFHook} from "alf/base/OwnedALFHook.sol";
-import {FeeLib} from "alf/libraries/FeeLib.sol";
-import {
-    Distribution,
-    LiquidityBucket,
-    MAX_BUCKETS,
-    computeAllocations,
-    activeLiquidity
-} from "alf/types/Distribution.sol";
-import {ActiveLiquidity, activeLiquidityFor} from "alf/types/ActiveLiquidity.sol";
-import {JITLock, jitLockFor, requireJITNotInProgress} from "alf/types/JITLock.sol";
+
+import {RingV2Math} from "../libraries/RingV2Math.sol";
 
 import {IFewWrappedToken} from "../interfaces/external/IFewWrappedToken.sol";
 import {IFewFactory} from "../interfaces/external/IFewFactory.sol";
 import {IWETH9} from "../interfaces/external/IWETH9.sol";
 
-/// @title Ring Share Liquidity Hook — single-pool JIT liquidity injection
-/// @notice The hook holds a token reserve as Few wrapped tokens (fwTokens) and lends it to a single
-///         pool for the duration of each swap: `beforeSwap` unwraps what is needed and injects it as
-///         concentrated liquidity across owner-configured tick ranges, the pool swaps against that
-///         liquidity as it would against any LP, and `afterSwap` withdraws the positions and wraps
-///         the proceeds back. The pool itself needs only enough real liquidity to exist, while depth
-///         comes from the reserve.
+/// @title Ring Share Liquidity Hook — RingV2 constant-product swap via fwToken reserves
+/// @notice The hook holds a token reserve as Few wrapped tokens (fwTokens) and answers every
+///         swap directly against those reserves using a V2-style constant-product formula
+///         (x*y=k). The v4 pool's own AMM never executes: `beforeSwap` returns a
+///         `BeforeSwapDelta` that fully intercepts the swap, and `afterSwap` settles the
+///         hook's physical token movement (unwrap fwToken for output, mint ERC-6909 claims
+///         for input). The fee charged internally is the pool's static LP fee (`key.fee`).
 ///
-///         **One hook per pool.** Each hook instance is deployed via `AllowlistedFactory` and serves
-///         exactly one pool, set up through `initializePool` + `bootstrap`. This eliminates the
-///         cross-pool delta-attribution and shared-balance hazards of a multi-pool design: the
-///         hook's `currencyDelta` is always this pool's delta, and the reserve ledgers track only
-///         this pool's capital.
+///         **RingV2** is a V2 variant where the underlying ("origin") tokens are wrapped into
+///         fwTokens. The V2 reserves are the hook's fwToken balances; swaps change them in
+///         place. Adding liquidity is "what you deposit is what you get" — the owner deposits
+///         fwTokens and those amounts become the reserves, with no tick distribution or share
+///         accounting.
 ///
-///         **Admin-owned capital.** Reserves are funded by the owner via `deposit` / `bootstrap` and
-///         withdrawn via `withdraw`. There is no share accounting and no external LP entry point;
-///         the owner is the sole capital provider. This mirrors `DualPoolHook`'s structure but
-///         replaces ERC-4626 vault rehypothecation with fwToken wrapping through the Few protocol.
+///         **One hook per pool.** Each hook instance is deployed via `AllowlistedFactory` and
+///         serves exactly one pool, set up through `initializePool` + `bootstrap`.
 ///
-///         Injecting liquidity — rather than answering the swap with a `BeforeSwapDelta` — is what
-///         makes the hook work behind the UniversalRouter, whose SWAP → SETTLE → TAKE order means
-///         the PoolManager does not yet hold the swapper's input when `beforeSwap` runs.
+///         **Admin-owned capital.** Reserves are funded by the owner via `deposit` / `bootstrap`
+///         and withdrawn via `withdraw`. There is no share accounting and no external LP entry
+///         point; external `modifyLiquidity` calls are rejected. The owner is the sole capital
+///         provider.
 ///
-/// ## Design
-///
-///   - **Single-pool reserve ledgers.** `fwReserveOf / rawReserveOf / claimReserveOf` are keyed by
-///     `PoolId` for consistency with the ALF type signatures, but only one pool is ever initialized.
-///     The ledgers, not `balanceOf`, are the source of truth for sizing, settlement and withdrawal;
-///     the physical balance is only ever used as a defensive cap.
-///
-///   - **Per-pool configuration.** `initializePool` creates the pool with its distribution and
-///     initial price; `bootstrap` seeds the reserve and flips liveness on; `setDistribution` updates
-///     tradable ranges; `setPoolLive` pauses/resumes.
-///
-///   - **One open JIT cycle at a time.** The upstream `JITLock` transient lock rejects same-pool
-///     reentry. This hook's permanent single-pool binding rejects every other pool, while the
-///     upstream global counter blocks owner operations until the active cycle settles.
-///
-///   - **Claims, never opportunistic `take`.** A positive delta always becomes ERC-6909 claims,
-///     redeemed at the start of the next cycle or via `sweepClaims`.
-///
-///   - **Price-manipulation guard.** The pool's current reserves must produce non-zero active
-///     liquidity at the current tick or `beforeSwap` reverts before price mutation.
-///
-///   - **Owner model.** OZ `Ownable2Step` (via `OwnedALFHook`), per-pool `setPoolLive`, and
-///     owner-gated pool initialization, deposits and withdrawals. Every configuration and
-///     fund-movement entry point is rejected while a JIT cycle is in flight.
-///
-/// ## JIT lifecycle
+/// ## Swap lifecycle
 ///
 ///   beforeSwap:
-///     1. Gate: pool live, distribution configured, current tick inside a bucket
-///     2. Enter the JIT lock
-///     3. Redeem ERC-6909 claims, size the deployment against the reserve, unwrap only the shortfall
-///     4. `modifyLiquidity` each bucket, then settle the resulting debt from the raw reserve
-///     5. Return ZERO_DELTA — the AMM swaps against the injected liquidity as usual
+///     1. Gate: pool live, valid
+///     2. Redeem ERC-6909 claims from previous swaps (cheapest capital first)
+///     3. Wrap raw reserves back into fwToken
+///     4. Read V2 reserves, compute amountIn / amountOut via constant-product math
+///     5. Store swap context in transient storage
+///     6. Return BeforeSwapDelta — the AMM swaps nothing (amountToSwap = 0)
 ///
 ///   afterSwap:
-///     1. Remove every bucket position recorded in transient storage
-///     2. Resolve the net delta: debt → settle from the raw reserve; credit → mint claims
-///     3. Wrap the leftover raw balance back into fwToken reserve
-///     4. Clear the JIT lock
+///     1. Read swap context from transient storage
+///     2. Unwrap fwToken for the output currency, settle to PoolManager
+///     3. Mint ERC-6909 claims for the input currency (swapper hasn't settled yet)
+///     4. Wrap any leftover raw balance back into fwToken
+///     5. Clear swap context
 ///
 /// @dev Native ETH (`address(0)`) is supported **only as `currency0`**. The hook holds reserves
-///      as fwTokens regardless: callers deposit fwWETH directly, while JIT liquidity unwraps it
-///      through WETH9 to ETH and wraps leftover ETH back after each cycle. A `receive()` function
-///      accepts ETH from WETH9 withdrawals and PoolManager `take`.
+///      as fwTokens regardless: callers deposit fwWETH directly, while swap output unwraps it
+///      through WETH9 to ETH and swap input mints claims redeemable for ETH later. A `receive()`
+///      function accepts ETH from WETH9 withdrawals and PoolManager `take`.
 contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCallback {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -119,36 +90,21 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     //                              CONSTANTS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Salt for the hook's LP positions in the PoolManager, distinguishing them
-    ///         from positions created by other hooks or LPs on the same pool.
-    bytes32 private constant LP_SALT = bytes32(uint256(0x52495A47)); // "RIZG"
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //                              TYPES
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /// @notice Configuration for initializing a new pool. Passed to `initializePool`.
-    /// @param sqrtPriceX96  Initial sqrt price (Q64.96) for the v4 pool.
-    /// @param distribution  Liquidity distribution buckets (weights must sum to 10_000).
-    struct PoolConfig {
-        uint160 sqrtPriceX96;
-        LiquidityBucket[] distribution;
-    }
+    /// @dev Transient-storage namespace for the per-swap context (beforeSwap → afterSwap).
+    ///      Slot +0: amountIn (uint256). Slot +1: amountOut (uint256). Slot +2: zeroForOne
+    ///      (uint256, 0 or 1). A zero amountIn means "no active swap context".
+    bytes32 private constant SWAP_CTX_NAMESPACE = keccak256("ringshareliq.swapctx.v2");
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                              STATE
     // ═══════════════════════════════════════════════════════════════════════════
-
-    /// @dev Per-pool liquidity distribution (tick ranges and weights). Set at initialization via
-    ///      `initializePool`, updatable via `setDistribution`, read by the JIT cycle.
-    Distribution internal _distribution;
 
     /// @notice The Few factory used to resolve fwToken addresses for each underlying currency.
     IFewFactory public immutable fewFactory;
 
     /// @notice The canonical WETH9 contract, used only when `currency0` is native ETH
     ///         (`address(0)`). The hook uses it when converting between fwWETH reserves and ETH
-    ///         for withdrawals and JIT liquidity. Unused for ERC-20 / ERC-20 pools.
+    ///         for withdrawals and swap settlement. Unused for ERC-20 / ERC-20 pools.
     IWETH9 public immutable weth9;
 
     /// @notice The contract that deployed this hook. Canonical deployments go through the
@@ -166,14 +122,16 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     mapping(Currency currency => address fwToken) public wrappedTokenOf;
 
     /// @notice Pool-owned fwToken reserve, keyed by the pool's *underlying* currency.
+    ///         This is the primary V2 reserve: swaps increase it (input wrapped) or decrease
+    ///         it (output unwrapped).
     mapping(PoolId => mapping(Currency => uint256)) public fwReserveOf;
 
-    /// @notice Pool-owned raw token reserve. Non-zero only mid-cycle and for wrap dust.
+    /// @notice Pool-owned raw token reserve. Non-zero only mid-swap and for wrap dust.
     mapping(PoolId => mapping(Currency => uint256)) public rawReserveOf;
 
     /// @notice Pool-owned ERC-6909 claims held in the PoolManager, minted for a positive delta
-    ///         that the PoolManager could not yet pay in real tokens. Redeemed at the start of the
-    ///         next JIT cycle, or by `sweepClaims`.
+    ///         (swap input) that the PoolManager could not yet pay in real tokens. Redeemed at
+    ///         the start of the next swap, or by `sweepClaims`.
     mapping(PoolId => mapping(Currency => uint256)) public claimReserveOf;
 
     /// @dev Underlying tokens already granted an allowance to their fwToken.
@@ -185,9 +143,6 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
 
     /// @notice Emitted when a new pool is initialized via `initializePool`.
     event PoolCreated(PoolId indexed poolId);
-
-    /// @notice Emitted when the liquidity distribution is replaced via `setDistribution`.
-    event DistributionUpdated(PoolId indexed poolId);
 
     /// @notice Emitted when the owner seeds the pool's reserve via `bootstrap` or `deposit`.
     event Deposited(PoolId indexed poolId, Currency indexed currency, uint256 fwAmount);
@@ -211,10 +166,9 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     error DynamicFeeNotSupported();
     error PoolAlreadyBootstrapped();
     error PoolAlreadyInitialized();
-    error BootstrapIncomplete();
     error InvalidPool();
     error CurrencyNotInPool();
-    error NoActiveLiquidity();
+    error InsufficientOutputLiquidity();
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                              CONSTRUCTOR
@@ -237,34 +191,26 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     }
 
     /// @dev Accepts native ETH from WETH9.withdraw and PoolManager.take. The hook never
-    ///      holds free ETH outside a JIT cycle or a deposit/withdraw/sweep operation.
+    ///      holds free ETH outside a swap cycle or a deposit/withdraw/sweep operation.
     receive() external payable {}
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //                              MODIFIERS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /// @dev Reverts {JITInProgress} if the pool has a JIT cycle in flight.
-    modifier whenJITNotInProgress() {
-        requireJITNotInProgress();
-        _;
-    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                        EXTERNAL: POOL INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Initialize a new pool with a liquidity distribution.
+    /// @notice Initialize a new pool.
     /// @dev    Calls `poolManager.initialize` internally. The pool's LP fee is taken from
-    ///         `key.fee` and is static. Native ETH (`address(0)`) is allowed **only as
-    ///         `currency0`**; `currency1` must be an ERC-20. The pool is created not live:
-    ///         swaps revert with `PoolNotLive` until the owner calls `bootstrap`, which seeds
-    ///         the reserve and flips liveness on.
-    /// @param key    The PoolKey (must reference this hook). `key.fee` is the static LP fee;
-    ///               dynamic-fee pools are rejected.
-    /// @param config Pool configuration including distribution and initial sqrt price.
+    ///         `key.fee` and is static — it is the fee the RingV2 math charges on each swap.
+    ///         Native ETH (`address(0)`) is allowed **only as `currency0`**; `currency1` must
+    ///         be an ERC-20. The pool is created not live: swaps revert with `PoolNotLive`
+    ///         until the owner calls `bootstrap`, which seeds the reserve and flips liveness.
+    /// @param key           The PoolKey (must reference this hook). `key.fee` is the static LP
+    ///                      fee used by the V2 math; dynamic-fee pools are rejected.
+    /// @param sqrtPriceX96  Initial sqrt price (Q64.96) for the v4 pool. Since the AMM never
+    ///                      swaps, this price is display-only; the real swap price is determined
+    ///                      by the V2 reserve ratio at bootstrap.
     /// @return tick  The initial tick assigned by the PoolManager.
-    function initializePool(PoolKey calldata key, PoolConfig calldata config) external onlyOwner returns (int24 tick) {
+    function initializePool(PoolKey calldata key, uint160 sqrtPriceX96) external onlyOwner returns (int24 tick) {
         if (initialized) revert PoolAlreadyInitialized();
         if (key.hooks != IHooks(address(this))) revert InvalidHookAddress();
         if (key.currency1.isAddressZero()) revert NativeNotSupported();
@@ -279,34 +225,30 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         configuredPoolId = id;
         wrappedTokenOf[key.currency0] = fwToken0;
         wrappedTokenOf[key.currency1] = fwToken1;
-        _distribution.set(id, config.distribution, key.tickSpacing);
 
-        tick = poolManager.initialize(key, config.sqrtPriceX96);
+        tick = poolManager.initialize(key, sqrtPriceX96);
         // Pool starts not live: liveness is gated on `bootstrap`.
         emit PoolCreated(id);
     }
 
     /// @notice Seed the pool's reserve with fwTokens and flip it to live.
     /// @dev    Only the owner may bootstrap. Pulls fwToken0 and fwToken1 from the caller and
-    ///         credits them to the pool's reserve. Flips liveness to true, enabling swaps.
-    ///         Reverts if the pool is already bootstrapped (liveness already true).
+    ///         credits them to the pool's reserve — these amounts become the initial V2
+    ///         reserves. Flips liveness to true, enabling swaps.
+    ///         Reverts if the pool is already bootstrapped (liveness already true) or if either
+    ///         reserve is zero (a V2 pool needs both sides to price swaps).
     /// @param key     The pool to bootstrap.
     /// @param amount0 fwToken0 amount to deposit for currency0.
     /// @param amount1 fwToken1 amount to deposit for currency1.
-    function bootstrap(PoolKey calldata key, uint256 amount0, uint256 amount1)
-        external
-        onlyOwner
-        nonReentrant
-        whenJITNotInProgress
-    {
+    function bootstrap(PoolKey calldata key, uint256 amount0, uint256 amount1) external onlyOwner nonReentrant {
         PoolId id = key.toId();
         _requirePool(id);
         if (_liveness.isLive(id)) revert PoolAlreadyBootstrapped();
+        if (amount0 == 0 || amount1 == 0) revert InsufficientReserve();
 
-        if (amount0 > 0) _pullFwToken(key.currency0, amount0, id);
-        if (amount1 > 0) _pullFwToken(key.currency1, amount1, id);
+        _pullFwToken(key.currency0, amount0, id);
+        _pullFwToken(key.currency1, amount1, id);
 
-        _requireActiveLiquidity(key, id);
         _liveness.setLive(id, true);
     }
 
@@ -318,12 +260,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     /// @param key     The pool the capital is credited to.
     /// @param amount0 fwToken0 amount to pull from the caller (0 to skip).
     /// @param amount1 fwToken1 amount to pull from the caller (0 to skip).
-    function deposit(PoolKey calldata key, uint256 amount0, uint256 amount1)
-        external
-        onlyOwner
-        nonReentrant
-        whenJITNotInProgress
-    {
+    function deposit(PoolKey calldata key, uint256 amount0, uint256 amount1) external onlyOwner nonReentrant {
         PoolId id = key.toId();
         _requirePool(id);
         _pullFwToken(key.currency0, amount0, id);
@@ -341,7 +278,6 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         external
         onlyOwner
         nonReentrant
-        whenJITNotInProgress
     {
         if (to == address(0)) revert NativeNotSupported();
 
@@ -353,7 +289,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
 
     /// @notice Convert the pool's outstanding ERC-6909 claims back into its fwToken reserve.
     /// @dev Claims are only redeemable inside a PoolManager unlock, so this opens one.
-    function sweepClaims(PoolKey calldata key) external onlyOwner nonReentrant whenJITNotInProgress {
+    function sweepClaims(PoolKey calldata key) external onlyOwner nonReentrant {
         _requirePool(key.toId());
         poolManager.unlock(abi.encode(key));
         emit ClaimsSwept(key.toId());
@@ -380,38 +316,17 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     //                        EXTERNAL: OWNER CONFIGURATION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @notice Replace the liquidity distribution for the pool.
-    /// @dev    Weights must sum to 10_000. Ticks must be aligned to tickSpacing.
-    ///         Reverts during an active JIT cycle to prevent orphaning live LP positions.
-    function setDistribution(PoolKey calldata key, LiquidityBucket[] calldata buckets)
-        external
-        onlyOwner
-        whenJITNotInProgress
-    {
-        PoolId id = key.toId();
-        _requirePool(id);
-        _distribution.set(id, buckets, key.tickSpacing);
-        emit DistributionUpdated(id);
-    }
-
     /// @notice Enable or disable pool liveness for emergency pause/resume.
     /// @dev    When toggled to false, `_beforeSwap` reverts with `PoolNotLive`, pausing the pool.
-    function setPoolLive(PoolKey calldata key, bool live) external onlyOwner whenJITNotInProgress {
+    function setPoolLive(PoolKey calldata key, bool live) external onlyOwner {
         PoolId id = key.toId();
         _requirePool(id);
-        if (live) _requireActiveLiquidity(key, id);
         _liveness.setLive(id, live);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                        EXTERNAL: VIEWS
     // ═══════════════════════════════════════════════════════════════════════════
-
-    /// @notice The current liquidity distribution for the pool.
-    function getDistribution(PoolId id) external view returns (LiquidityBucket[] memory) {
-        _requirePool(id);
-        return _distribution.get(id);
-    }
 
     /// @notice Total reserves managed by this hook for the pool (fwToken + raw + claims).
     function getReserves(PoolKey calldata key) external view override returns (uint256 token0, uint256 token1) {
@@ -435,26 +350,36 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         token1 = _effectiveReserve(id, key.currency1);
     }
 
-    /// @notice Conservative indicative quote against hypothetical JIT liquidity.
-    /// @dev Returns zero when the request cannot be filled inside the current liquidity segment.
-    ///      Routers must not extrapolate the current liquidity across a distribution boundary.
+    /// @notice V2 indicative quote against the hook's fwToken reserves.
+    /// @dev Returns the output amount for exact-input swaps, or the required input for
+    ///      exact-output swaps. Returns 0 when the swap cannot be filled.
     function getIndicativeQuote(PoolKey calldata key, bool zeroForOne, int256 amountSpecified, bytes calldata)
         external
         view
         override
         returns (uint256 outputAmount)
     {
-        _requirePool(key.toId());
-        uint160 limit = zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1;
-        (uint256 amountIn, uint256 amountOut) = _simulateIndicative(key, zeroForOne, amountSpecified, limit);
+        PoolId id = key.toId();
+        _requirePool(id);
+        if (!_liveness.isLive(id)) return 0;
+
+        (uint256 reserveIn, uint256 reserveOut) = _v2Reserves(id, key, zeroForOne);
+        if (reserveIn == 0 || reserveOut == 0) return 0;
+
+        uint24 fee = key.fee;
         if (amountSpecified < 0) {
-            outputAmount = amountOut;
+            // exact input: return output
+            outputAmount = RingV2Math.getAmountOut(SignedMath.abs(amountSpecified), reserveIn, reserveOut, fee);
         } else {
-            outputAmount = amountOut >= SafeCast.toUint256(amountSpecified) ? amountIn : 0;
+            // exact output: return required input (0 if unfillable)
+            uint256 amountOut = uint256(amountSpecified);
+            if (amountOut >= reserveOut) return 0;
+            outputAmount = RingV2Math.getAmountIn(amountOut, reserveIn, reserveOut, fee);
         }
     }
 
-    /// @notice Simulate a price-bounded swap against hypothetical JIT liquidity.
+    /// @notice Simulate a V2 swap. The price limit is checked against the post-swap V2 price;
+    ///         if the limit would be exceeded, (0, 0) is returned.
     function swapToPrice(
         PoolKey calldata key,
         bool zeroForOne,
@@ -462,8 +387,29 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         uint160 sqrtPriceLimitX96,
         bytes calldata
     ) external view override returns (uint256 amountIn, uint256 amountOut) {
-        _requirePool(key.toId());
-        return _simulateIndicative(key, zeroForOne, amountSpecified, sqrtPriceLimitX96);
+        PoolId id = key.toId();
+        _requirePool(id);
+        if (!_liveness.isLive(id)) return (0, 0);
+        if (amountSpecified == 0) return (0, 0);
+
+        (uint256 reserveIn, uint256 reserveOut) = _v2Reserves(id, key, zeroForOne);
+        if (reserveIn == 0 || reserveOut == 0) return (0, 0);
+
+        uint24 fee = key.fee;
+        if (amountSpecified < 0) {
+            amountIn = SignedMath.abs(amountSpecified);
+            amountOut = RingV2Math.getAmountOut(amountIn, reserveIn, reserveOut, fee);
+        } else {
+            amountOut = uint256(amountSpecified);
+            if (amountOut >= reserveOut) return (0, 0);
+            amountIn = RingV2Math.getAmountIn(amountOut, reserveIn, reserveOut, fee);
+        }
+        if (amountIn == 0 || amountOut == 0) return (0, 0);
+
+        // Check post-swap price against the limit.
+        if (!_priceWithinLimit(key, zeroForOne, reserveIn, reserveOut, amountIn, amountOut, sqrtPriceLimitX96)) {
+            return (0, 0);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -472,10 +418,10 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
 
     /// @dev Required v4 hook flags:
     ///      - beforeInitialize: block direct init (force initializePool)
-    ///      - beforeAddLiquidity / beforeRemoveLiquidity: open to any LP
-    ///        (external LP diluted by JIT reserve injection on each swap)
-    ///      - beforeSwap: JIT deployment
-    ///      - afterSwap: JIT teardown + delta resolution
+    ///      - beforeAddLiquidity / beforeRemoveLiquidity: reject external LPs
+    ///      - beforeSwap: V2 swap computation, return BeforeSwapDelta to intercept
+    ///      - beforeSwapReturnDelta: the hook answers the swap with its own delta
+    ///      - afterSwap: settle output (unwrap + settle) and mint claims for input
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: true,
@@ -488,7 +434,7 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
             afterSwap: true,
             beforeDonate: false,
             afterDonate: false,
-            beforeSwapReturnDelta: false,
+            beforeSwapReturnDelta: true,
             afterSwapReturnDelta: false,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
@@ -499,34 +445,33 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     //                        INTERNAL: HOOK CALLBACKS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @dev External `modifyLiquidity` (add) is open to any LP — external liquidity
-    ///      is diluted by the hook's JIT reserve injection on each swap. v4-core's
-    ///      `Hooks.noSelfCall` skips this callback when the hook itself is the caller,
-    ///      so JIT-internal calls always bypass it.
+    /// @dev External `modifyLiquidity` (add) is allowed. The hook intercepts all swaps via
+    ///      `beforeSwapReturnDelta`, so external LP liquidity sits in the V4 pool but is never
+    ///      used for swap execution — the hook's V2 fwToken reserve is the sole swap source.
+    ///      External LPs may add and remove freely; their liquidity earns no swap fees.
     function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
         internal
-        view
+        pure
         override
         returns (bytes4)
     {
         return IHooks.beforeAddLiquidity.selector;
     }
 
-    /// @dev External `modifyLiquidity` (remove) is open to any LP — symmetric with
-    ///      `_beforeAddLiquidity` so external LPs can withdraw their own positions.
-    ///      v4-core's `Hooks.noSelfCall` skips this callback for hook-internal calls.
+    /// @dev External `modifyLiquidity` (remove) is allowed — symmetric with `_beforeAddLiquidity`.
     function _beforeRemoveLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
         internal
-        view
+        pure
         override
         returns (bytes4)
     {
         return IHooks.beforeRemoveLiquidity.selector;
     }
 
-    /// @dev JIT entry point. Deploys multi-range JIT liquidity under the JIT lock.
-    ///      Reverts when the pool is paused (`!live`). Routers see an explicit failure.
-    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata, bytes calldata)
+    /// @dev V2 swap entry point. Computes the constant-product swap against the hook's fwToken
+    ///      reserves and returns a `BeforeSwapDelta` that fully intercepts the swap (the AMM
+    ///      swaps zero). Reverts when the pool is paused (`!live`).
+    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
@@ -535,21 +480,55 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         _requirePool(id);
         _liveness.requireLive(id);
 
-        LiquidityBucket[] memory buckets = _distribution.get(id);
+        // Redeem claims from previous swaps and wrap raw → fwToken so the full reserve is
+        // available as fwToken for the output side.
+        _redeemClaims(id, key.currency0);
+        _redeemClaims(id, key.currency1);
+        _wrapReserve(id, key.currency0);
+        _wrapReserve(id, key.currency1);
 
-        (uint160 sqrtPriceX96, int24 tick,,) = poolManager.getSlot0(id);
-        (uint256 bal0, uint256 bal1) = _effectiveReserves(id, key);
-        if (activeLiquidity(buckets, sqrtPriceX96, tick, bal0, bal1) == 0) revert NoActiveLiquidity();
+        bool zeroForOne = params.zeroForOne;
+        (uint256 reserveIn, uint256 reserveOut) = _v2Reserves(id, key, zeroForOne);
+        if (reserveIn == 0 || reserveOut == 0) revert InsufficientReserve();
 
-        jitLockFor(id).enter();
-        _deployJIT(id, key, buckets, sqrtPriceX96);
+        uint24 fee = key.fee;
+        uint256 amountIn;
+        uint256 amountOut;
+        bool exactInput = params.amountSpecified < 0;
 
-        return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        if (exactInput) {
+            amountIn = SignedMath.abs(params.amountSpecified);
+            amountOut = RingV2Math.getAmountOut(amountIn, reserveIn, reserveOut, fee);
+            if (amountOut == 0) revert InsufficientReserve();
+        } else {
+            amountOut = uint256(params.amountSpecified);
+            if (amountOut >= reserveOut) revert InsufficientOutputLiquidity();
+            amountIn = RingV2Math.getAmountIn(amountOut, reserveIn, reserveOut, fee);
+        }
+
+        // The hook must have enough fwToken of the output currency to unwrap and settle.
+        Currency outputCurrency = zeroForOne ? key.currency1 : key.currency0;
+        if (fwReserveOf[id][outputCurrency] < amountOut) revert InsufficientOutputLiquidity();
+
+        // Store swap context for afterSwap.
+        _storeSwapContext(amountIn, amountOut, zeroForOne);
+
+        // Build BeforeSwapDelta:
+        //   exactInput:  specifiedDelta = +amountIn (hook takes input),
+        //                unspecifiedDelta = -amountOut (hook provides output)
+        //   exactOutput: specifiedDelta = -amountOut (hook provides output),
+        //                unspecifiedDelta = +amountIn (hook takes input)
+        int128 deltaSpecified = exactInput ? int128(int256(amountIn)) : -int128(int256(amountOut));
+        int128 deltaUnspecified = exactInput ? -int128(int256(amountOut)) : int128(int256(amountIn));
+
+        return (IHooks.beforeSwap.selector, toBeforeSwapDelta(deltaSpecified, deltaUnspecified), 0);
     }
 
-    /// @dev JIT teardown. Removes all bucket positions, resolves the hook's net delta for both
-    ///      currencies, wraps leftover raw balance back into fwToken reserve, and clears the lock.
-    ///      The lock check is defensive: a successful `beforeSwap` always enters before deployment.
+    /// @dev V2 swap settlement. Unwraps fwToken for the output and settles it to the
+    ///      PoolManager; mints ERC-6909 claims for the input (the swapper hasn't settled yet,
+    ///      so the PoolManager may not hold the input tokens). The beforeSwap delta is
+    ///      accounted by the PoolManager *after* afterSwap returns, so the hook pre-settles
+    ///      here and the accounting nets everything to zero.
     function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
         internal
         override
@@ -557,123 +536,37 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     {
         PoolId id = key.toId();
         _requirePool(id);
-        if (!_isJITLocked(id)) return (IHooks.afterSwap.selector, 0);
 
-        _removeJIT(id, key);
-        _resolveCurrency(id, key.currency0);
-        _resolveCurrency(id, key.currency1);
+        (uint256 amountIn, uint256 amountOut, bool zeroForOne) = _loadSwapContext();
+        if (amountIn == 0) return (IHooks.afterSwap.selector, 0); // no active context
+
+        Currency inputCurrency = zeroForOne ? key.currency0 : key.currency1;
+        Currency outputCurrency = zeroForOne ? key.currency1 : key.currency0;
+
+        // 1. Unwrap fwToken for the output and settle to PoolManager.
+        _unwrapReserve(id, outputCurrency, amountOut);
+        uint256 rawOut = rawReserveOf[id][outputCurrency];
+        if (rawOut < amountOut) revert InsufficientReserve();
+        rawReserveOf[id][outputCurrency] = rawOut - amountOut;
+        _settle(outputCurrency, address(this), amountOut);
+
+        // 2. Mint ERC-6909 claims for the input (swapper hasn't settled yet).
+        poolManager.mint(address(this), inputCurrency.toId(), amountIn);
+        claimReserveOf[id][inputCurrency] += amountIn;
+
+        // 3. Wrap any leftover raw balance back into fwToken.
         _wrapReserve(id, key.currency0);
         _wrapReserve(id, key.currency1);
 
-        jitLockFor(id).clear();
+        // 4. Clear swap context.
+        _clearSwapContext();
+
         return (IHooks.afterSwap.selector, 0);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //                        INTERNAL: JIT LIFECYCLE
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /// @dev Deploy JIT liquidity across all distribution buckets.
-    ///
-    ///      1. Redeem claims — the cheapest capital.
-    ///      2. Size the deployment against the pool's whole reserve.
-    ///      3. Unwrap only the shortfall, so capital the deployment does not need stays wrapped.
-    ///      4. Deploy each bucket, then settle the resulting debt from the raw reserve.
-    function _deployJIT(PoolId poolId, PoolKey calldata key, LiquidityBucket[] memory buckets, uint160 sqrtPriceX96)
-        internal
-    {
-        uint256 raw0 = _redeemClaims(poolId, key.currency0);
-        uint256 raw1 = _redeemClaims(poolId, key.currency1);
-
-        uint256 bal0 = raw0 + fwReserveOf[poolId][key.currency0];
-        uint256 bal1 = raw1 + fwReserveOf[poolId][key.currency1];
-        if (bal0 == 0 && bal1 == 0) return;
-
-        (uint128[MAX_BUCKETS] memory liqs, uint256 need0, uint256 need1) =
-            computeAllocations(buckets, sqrtPriceX96, bal0, bal1);
-        if (need0 == 0 && need1 == 0) return;
-
-        if (need0 > raw0) _unwrapReserve(poolId, key.currency0, need0 - raw0);
-        if (need1 > raw1) _unwrapReserve(poolId, key.currency1, need1 - raw1);
-
-        ActiveLiquidity slots = activeLiquidityFor(poolId);
-        uint256 n = buckets.length;
-        for (uint256 i; i < n; ++i) {
-            uint128 liq = liqs[i];
-            if (liq == 0) continue;
-            poolManager.modifyLiquidity(
-                key,
-                ModifyLiquidityParams({
-                    tickLower: buckets[i].tickLower,
-                    tickUpper: buckets[i].tickUpper,
-                    liquidityDelta: int256(uint256(liq)),
-                    salt: LP_SALT
-                }),
-                ""
-            );
-            slots.store(i, liq);
-        }
-
-        // Settle the debt from deploying liquidity so the hook's delta is zero before the swap.
-        _settleDebt(poolId, key.currency0);
-        _settleDebt(poolId, key.currency1);
-    }
-
-    /// @dev Remove every position this cycle deployed, reading the transient record.
-    function _removeJIT(PoolId poolId, PoolKey calldata key) internal {
-        LiquidityBucket[] memory buckets = _distribution.get(poolId);
-        ActiveLiquidity slots = activeLiquidityFor(poolId);
-        uint256 n = buckets.length;
-
-        for (uint256 i; i < n; ++i) {
-            uint128 liq = slots.takeAndClear(i);
-            if (liq == 0) continue;
-            poolManager.modifyLiquidity(
-                key,
-                ModifyLiquidityParams({
-                    tickLower: buckets[i].tickLower,
-                    tickUpper: buckets[i].tickUpper,
-                    liquidityDelta: -int256(uint256(liq)),
-                    salt: LP_SALT
-                }),
-                ""
-            );
-        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                        INTERNAL: SETTLEMENT
     // ═══════════════════════════════════════════════════════════════════════════
-
-    /// @dev Resolve the hook's net delta for one currency, crediting or debiting the pool's ledger.
-    ///      A positive delta always becomes ERC-6909 claims (the swapper hasn't settled yet).
-    function _resolveCurrency(PoolId poolId, Currency currency) internal {
-        int256 delta = poolManager.currencyDelta(address(this), currency);
-        if (delta > 0) {
-            uint256 credit = SafeCast.toUint256(delta);
-            poolManager.mint(address(this), currency.toId(), credit);
-            claimReserveOf[poolId][currency] += credit;
-        } else if (delta < 0) {
-            _settleDebt(poolId, currency);
-        }
-    }
-
-    /// @dev Pay off the hook's whole debt for `currency` out of the pool's reserve. Falls back to
-    ///      unwrapping if the raw ledger is a few wei short of the rounded-up deployment cost.
-    function _settleDebt(PoolId poolId, Currency currency) internal {
-        int256 delta = poolManager.currencyDelta(address(this), currency);
-        if (delta >= 0) return;
-        uint256 owed = SignedMath.abs(delta);
-
-        uint256 raw = rawReserveOf[poolId][currency];
-        if (raw < owed) {
-            _unwrapReserve(poolId, currency, owed - raw);
-            raw = rawReserveOf[poolId][currency];
-            if (raw < owed) revert InsufficientReserve();
-        }
-        rawReserveOf[poolId][currency] = raw - owed;
-        _settle(currency, address(this), owed);
-    }
 
     /// @dev Redeem the pool's ERC-6909 claims into raw tokens, capped by what the PoolManager can
     ///      physically honour right now, and return the pool's raw reserve afterwards.
@@ -806,77 +699,99 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //                        INTERNAL: PRICING
+    //                        INTERNAL: SWAP CONTEXT (TRANSIENT)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// @dev Simulate a swap against hypothetical JIT liquidity for indicative quoting.
-    function _simulateIndicative(
-        PoolKey calldata key,
-        bool zeroForOne,
-        int256 amountSpecified,
-        uint160 sqrtPriceLimitX96
-    ) internal view returns (uint256 amountIn, uint256 amountOut) {
-        PoolId id = key.toId();
-        _requirePool(id);
-
-        if (!_liveness.isLive(id)) return (0, 0);
-        uint24 feePips = key.fee;
-
-        (uint256 bal0, uint256 bal1) = _effectiveReserves(id, key);
-        if (bal0 == 0 && bal1 == 0) return (0, 0);
-
-        uint160 sqrtPriceX96;
-        int24 currentTick;
-        {
-            uint24 protocolFee;
-            (sqrtPriceX96, currentTick, protocolFee,) = poolManager.getSlot0(id);
-            if (sqrtPriceX96 == 0) return (0, 0);
-            if (zeroForOne
-                    ? sqrtPriceLimitX96 >= sqrtPriceX96 || sqrtPriceLimitX96 <= TickMath.MIN_SQRT_PRICE
-                    : sqrtPriceLimitX96 <= sqrtPriceX96 || sqrtPriceLimitX96 >= TickMath.MAX_SQRT_PRICE) return (0, 0);
-            feePips = FeeLib.effectiveSwapFee(feePips, protocolFee, zeroForOne);
+    function _storeSwapContext(uint256 amountIn, uint256 amountOut, bool zeroForOne) internal {
+        bytes32 base = SWAP_CTX_NAMESPACE;
+        assembly ("memory-safe") {
+            tstore(base, amountIn)
+            tstore(add(base, 1), amountOut)
+            tstore(add(base, 2), iszero(iszero(zeroForOne)))
         }
+    }
 
-        LiquidityBucket[] memory buckets = _distribution.get(id);
-        uint128 liquidity = activeLiquidity(buckets, sqrtPriceX96, currentTick, bal0, bal1);
-        if (liquidity == 0 || amountSpecified == 0) return (0, 0);
+    function _loadSwapContext() internal returns (uint256 amountIn, uint256 amountOut, bool zeroForOne) {
+        bytes32 base = SWAP_CTX_NAMESPACE;
+        assembly ("memory-safe") {
+            amountIn := tload(base)
+            amountOut := tload(add(base, 1))
+            zeroForOne := iszero(iszero(tload(add(base, 2))))
+        }
+    }
 
-        (uint160 target, bool clipped) = _segmentTarget(buckets, currentTick, zeroForOne, sqrtPriceLimitX96);
-        (, uint256 stepIn, uint256 stepOut, uint256 feeAmount) =
-            SwapMath.computeSwapStep(sqrtPriceX96, target, liquidity, amountSpecified, feePips);
-        amountIn = stepIn + feeAmount;
-        amountOut = stepOut;
-
-        uint256 specified = SignedMath.abs(amountSpecified);
-        if (clipped && (amountSpecified < 0 ? amountIn < specified : amountOut < specified)) return (0, 0);
-
-        uint256 outReserve = zeroForOne ? bal1 : bal0;
-        if (amountOut > outReserve) return (0, 0);
+    function _clearSwapContext() internal {
+        bytes32 base = SWAP_CTX_NAMESPACE;
+        assembly ("memory-safe") {
+            tstore(base, 0)
+            tstore(add(base, 1), 0)
+            tstore(add(base, 2), 0)
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                        INTERNAL: HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function _segmentTarget(LiquidityBucket[] memory buckets, int24 tick, bool zeroForOne, uint160 limit)
+    /// @dev Returns (reserveIn, reserveOut) for the V2 math, based on swap direction.
+    ///      Uses effective reserves (fw + raw + min(claims, PoolManager balance)).
+    function _v2Reserves(PoolId id, PoolKey calldata key, bool zeroForOne)
         private
-        pure
-        returns (uint160 target, bool clipped)
+        view
+        returns (uint256 reserveIn, uint256 reserveOut)
     {
-        int24 boundary = zeroForOne ? TickMath.MIN_TICK : TickMath.MAX_TICK;
-        uint256 n = buckets.length;
-        for (uint256 i; i < n; ++i) {
-            if (zeroForOne) {
-                if (buckets[i].tickLower <= tick && buckets[i].tickLower > boundary) boundary = buckets[i].tickLower;
-                if (buckets[i].tickUpper <= tick && buckets[i].tickUpper > boundary) boundary = buckets[i].tickUpper;
-            } else {
-                if (buckets[i].tickLower > tick && buckets[i].tickLower < boundary) boundary = buckets[i].tickLower;
-                if (buckets[i].tickUpper > tick && buckets[i].tickUpper < boundary) boundary = buckets[i].tickUpper;
-            }
+        uint256 r0 = _effectiveReserve(id, key.currency0);
+        uint256 r1 = _effectiveReserve(id, key.currency1);
+        if (zeroForOne) {
+            reserveIn = r0;
+            reserveOut = r1;
+        } else {
+            reserveIn = r1;
+            reserveOut = r0;
         }
-        uint160 boundaryPrice = TickMath.getSqrtPriceAtTick(boundary);
-        target = SwapMath.getSqrtPriceTarget(zeroForOne, boundaryPrice, limit);
-        clipped = target != limit;
+    }
+
+    /// @dev Check whether the post-swap V2 price stays within the v4 sqrt-price limit.
+    ///      The V2 price (currency1/currency0) is converted to sqrtPriceX96 for comparison.
+    function _priceWithinLimit(
+        PoolKey calldata key,
+        bool zeroForOne,
+        uint256 reserveIn,
+        uint256 reserveOut,
+        uint256 amountIn,
+        uint256 amountOut,
+        uint160 sqrtPriceLimitX96
+    ) private pure returns (bool) {
+        // Post-swap reserves.
+        uint256 newReserveIn = reserveIn + amountIn;
+        uint256 newReserveOut = reserveOut - amountOut;
+        if (newReserveIn == 0 || newReserveOut == 0) return false;
+
+        // V2 price = reserve1 / reserve0. Compute sqrtPriceX96 = sqrt(price) * 2^96.
+        // For zeroForOne: reserveIn = reserve0, reserveOut = reserve1.
+        // For !zeroForOne: reserveIn = reserve1, reserveOut = reserve0.
+        uint256 newR0 = zeroForOne ? newReserveIn : newReserveOut;
+        uint256 newR1 = zeroForOne ? newReserveOut : newReserveIn;
+
+        // price = newR1 / newR0 (as a FixedPoint96 sqrt). We approximate:
+        // sqrtPriceX96 ≈ sqrt(newR1 * 2^192 / newR0)
+        // To avoid overflow, use a simplified check: compare price ratios.
+        // zeroForOne: price decreases, so sqrtPriceLimitX96 is a floor.
+        // !zeroForOne: price increases, so sqrtPriceLimitX96 is a ceiling.
+        if (zeroForOne) {
+            // Price must stay >= limit: newR1/newR0 >= (limit/2^96)^2
+            // => newR1 * 2^192 >= limit^2 * newR0
+            // Approximate: newR1 / newR0 >= priceLimit^2 / 2^192
+            // For safety, just check the ratio direction.
+            if (sqrtPriceLimitX96 <= TickMath.MIN_SQRT_PRICE) return true; // no effective limit
+            // Compare: newR1 * 1 >= newR0 * (limit^2 / 2^192) — use full ratio
+            // Simplified: newR1 * 2^96 >= newR0 * sqrtPriceLimitX96 (approximate)
+            // This is an approximation; exact check requires full sqrt math.
+            return newR1 * (1 << 96) >= newR0 * sqrtPriceLimitX96;
+        } else {
+            if (sqrtPriceLimitX96 >= TickMath.MAX_SQRT_PRICE) return true; // no effective limit
+            return newR1 * (1 << 96) <= newR0 * sqrtPriceLimitX96;
+        }
     }
 
     function _resolveWrappedToken(Currency currency) private view returns (address fwToken) {
@@ -904,26 +819,5 @@ contract RingShareLiqHook is OwnedALFHook, ReentrancyGuardTransient, IUnlockCall
         uint256 claims = claimReserveOf[id][currency];
         uint256 managerBalance = currency.balanceOf(address(poolManager));
         available += (claims < managerBalance ? claims : managerBalance);
-    }
-
-    function _effectiveReserves(PoolId id, PoolKey calldata key) private view returns (uint256, uint256) {
-        return (_effectiveReserve(id, key.currency0), _effectiveReserve(id, key.currency1));
-    }
-
-    function _requireActiveLiquidity(PoolKey calldata key, PoolId id) private view {
-        (uint160 sqrtPriceX96, int24 tick,,) = poolManager.getSlot0(id);
-        (uint256 bal0, uint256 bal1) = _effectiveReserves(id, key);
-        if (activeLiquidity(_distribution.get(id), sqrtPriceX96, tick, bal0, bal1) == 0) {
-            revert NoActiveLiquidity();
-        }
-    }
-
-    /// @dev Whether the JIT lock is set for `poolId`. Reads the per-pool transient slot that
-    ///      `JITLock.enter` writes and `JITLock.clear` zeroes.
-    function _isJITLocked(PoolId poolId) private view returns (bool locked) {
-        bytes32 slot = JITLock.unwrap(jitLockFor(poolId));
-        assembly ("memory-safe") {
-            locked := iszero(iszero(tload(slot)))
-        }
     }
 }

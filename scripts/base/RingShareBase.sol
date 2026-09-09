@@ -6,11 +6,8 @@ import {console2} from "forge-std/console2.sol";
 
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
-import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-
-import {LiquidityBucket} from "alf/types/Distribution.sol";
 
 /// @notice Shared helpers for the RingShareLiqHook workflow scripts.
 ///
@@ -25,8 +22,11 @@ abstract contract RingShareBase is Script {
 
     /// @dev Hook permission flags required by `RingShareLiqHook.getHookPermissions`, encoded in
     ///      the low 14 bits of the hook address. `BaseHook.validateHookAddress` enforces the match.
+    ///      beforeInitialize(13) + beforeAddLiquidity(11) + beforeRemoveLiquidity(9) +
+    ///      beforeSwap(7) + afterSwap(6) + beforeSwapReturnDelta(3) = 0x2AC8.
     uint160 internal constant REQUIRED_HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
-        | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG;
+        | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+        | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG;
 
     function _poolKey(address hook) internal view returns (PoolKey memory key) {
         address tokenA = vm.envAddress("TOKEN_A_ADDR");
@@ -50,25 +50,6 @@ abstract contract RingShareBase is Script {
         return tokenA < tokenB
             ? (Currency.wrap(tokenA), Currency.wrap(tokenB))
             : (Currency.wrap(tokenB), Currency.wrap(tokenA));
-    }
-
-    /// @dev Liquidity distribution. `LADDERED=true` selects the adjacent non-overlapping ladder
-    ///      [-600,-180] 25% / [-180,180] 50% / [180,600] 25% (requires tickSpacing dividing 60);
-    ///      otherwise a single full-range bucket aligned to `tickSpacing`.
-    function _distribution(int24 tickSpacing) internal view returns (LiquidityBucket[] memory buckets) {
-        if (vm.envOr("LADDERED", false)) {
-            buckets = new LiquidityBucket[](3);
-            buckets[0] = LiquidityBucket({tickLower: -600, tickUpper: -180, weightBps: 2500});
-            buckets[1] = LiquidityBucket({tickLower: -180, tickUpper: 180, weightBps: 5000});
-            buckets[2] = LiquidityBucket({tickLower: 180, tickUpper: 600, weightBps: 2500});
-        } else {
-            buckets = new LiquidityBucket[](1);
-            buckets[0] = LiquidityBucket({
-                tickLower: TickMath.minUsableTick(tickSpacing),
-                tickUpper: TickMath.maxUsableTick(tickSpacing),
-                weightBps: 10_000
-            });
-        }
     }
 
     function _logKey(PoolKey memory key) internal pure {
