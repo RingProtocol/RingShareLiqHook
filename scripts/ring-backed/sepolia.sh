@@ -11,7 +11,7 @@ fi
 # must take precedence over defaults stored in the dotenv file.
 override_names=(
     SIMULATE ACTION LIVE TOKEN_ADDR AMOUNT TO ZERO_FOR_ONE AMOUNT_SPECIFIED
-    AMOUNT_LIMIT DEADLINE DEADLINE_FROM_NOW RUN_CHECKS
+    AMOUNT_LIMIT DEADLINE DEADLINE_FROM_NOW RUN_CHECKS SYNC_ONLY SQRT_PRICE_LIMIT_X96
 )
 override_values=()
 override_present=()

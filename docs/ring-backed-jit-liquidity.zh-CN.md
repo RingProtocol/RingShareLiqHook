@@ -61,8 +61,9 @@ v4。Hook 对候选 JIT liquidity 执行搜索：
 5. 允许的正向输入余量最多为一个最小输出单位对应的输入量，再加固定的 8 raw-unit 边界。
 
 选择不需要输入补贴的候选，是为了避免 Hook 用 owner 资金长期补贴 FewV2 手续费或价格误差。
-如果找不到安全的 JIT 解，报价会退化为仅使用常驻 LP；此时 `Plan.liquidity == 0`，Ring 储备
-不会被使用。
+如果找不到安全的 JIT 解，只有当常驻 LP 的边际价格仍处于 Ring 每跳 30 bps 费用带加 5%
+漂移容差以内时，报价才会退化为仅使用常驻 LP；此时 `Plan.liquidity == 0`，Ring 储备不会
+被使用。偏差超过范围时返回 `QuoteDeviationExceeded`，不会输出过期的常驻 LP 报价。
 
 公开读取接口：
 
@@ -78,6 +79,13 @@ quote(PoolKey key, bool zeroForOne, int256 amountSpecified)
 - `plan.liquidity > 0` 表示启用 Ring JIT；等于 0 表示常驻 LP fallback。
 
 报价是 indicative quote。Pair 储备、v4 价格或流动性变化后，执行结果可能变化或交易回滚。
+
+`getSpotDeviationBps(forward)` 可用于监控指定方向的边际价格偏差和当前允许带宽。允许带宽
+包含路径中每跳 30 bps 的 FewV2 费用，以及 `MAX_SPOT_DEVIATION_BPS = 500` 的漂移容差。
+
+当偏差过大时，套利者可调用 `RingLPRouter.syncPrice()`，使用自己的输入资产仅与常驻 v4 LP
+交易，将 v4 价格推向 Ring。调用者必须提供输入数量、最小输出、deadline 和目标
+`sqrtPriceLimitX96`。该同步仍是普通 PoolManager swap，不开启 before/after swap return delta。
 
 ## 5. 单笔交易生命周期
 

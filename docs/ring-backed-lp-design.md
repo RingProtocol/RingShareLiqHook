@@ -18,9 +18,10 @@ off; PoolManager performs the native curve accounting.
 4. The user trades once against the combined curve. `afterSwap` verifies the amounts and ending
    price, removes the entire JIT position, and donates positive rounding credit to the permanent
    full-range LPs.
-5. If no safe Ring/JIT match exists at the current price, the trade executes only against the
-   permanent v4 position and Ring reserves remain unchanged. This fallback is needed because the
-   v4 price can move inside the 30 bps Ring fee band after prior trades.
+5. If no safe Ring/JIT match exists, base-only fallback is allowed only while the permanent v4
+   marginal price remains within the Ring fee band plus 5% drift tolerance. A larger deviation
+   reverts with `QuoteDeviationExceeded`; an arbitrageur can use `RingLPRouter.syncPrice` to trade
+   only against the permanent LP and move its price back toward Ring.
 
 Only full-range external positions are accepted. Narrow positions would change active base
 liquidity along the path and invalidate the hybrid calculation. Any number of full-range NFT
@@ -37,6 +38,11 @@ full-range LPs.
 `Plan.amountIn` and `Plan.amountOut` are the total user fill. Negative `amountSpecified` is
 exact input and positive is exact output. The caller must enforce a chosen minimum output or
 maximum input and a deadline.
+
+`getSpotDeviationBps(forward)` returns the measured marginal deviation and the allowed directional
+band. The band includes 30 bps for each FewV2 hop plus `MAX_SPOT_DEVIATION_BPS` (currently 500).
+The synchronization path does not enable hook return deltas: it is an ordinary v4 swap paid by the
+caller, with an explicit amount limit, deadline and square-root price limit.
 
 Endpoints must be ERC-20 tokens, so use WETH instead of native ETH. The pinned route contains two
 to four distinct canonical Few wrappers. Fee-on-transfer and rebasing assets are unsupported.
