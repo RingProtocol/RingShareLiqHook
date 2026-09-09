@@ -1,5 +1,19 @@
 # Ring Share Liquidity Hook
 
+## Ring-backed JIT LP
+
+`RingBackedLiqHook` combines permanent full-range v4 liquidity with an optional real, per-order
+JIT position sourced from Ring FewV2. Both swap-return-delta flags remain disabled. The pool uses
+zero v4 LP fee, a fixed canonical Ring route, and a prefunded `RingLPRouter`. FewV2's 30 bps
+per-hop fee remains and the hook adds no surcharge. Only full-range external positions are
+accepted; unmatched orders safely execute against the permanent position without touching Ring.
+An owner-funded rounding reserve has a hard per-swap loss cap of 8 raw units per currency.
+
+See [design, limits, and Sepolia scripts](docs/ring-backed-lp-design.md). The implementation has
+local fixture tests and has been exercised against a live Sepolia Ring pair and Uniswap v4 pool.
+
+## Original owner-reserve JIT LP
+
 `RingShareLiqHook` lends a pool's own FewToken reserve to its Uniswap V4 pool as JIT liquidity for
 the duration of each swap. Each hook instance is deployed via `AllowlistedFactory` and serves
 exactly one pool, configured through `initializePool` + `bootstrap`; reserve accounting is isolated

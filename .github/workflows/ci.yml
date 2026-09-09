@@ -43,4 +43,5 @@ jobs:
       - name: Run unit, fuzz, and invariant tests
         env:
           FOUNDRY_INVARIANT_FAIL_ON_REVERT: "true"
-        run: forge test --offline --threads 1
+        # Lint may leave ABI-only artifacts; force bytecode regeneration so no suite is skipped.
+        run: forge test --force --offline --threads 1
