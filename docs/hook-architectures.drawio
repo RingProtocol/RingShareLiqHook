@@ -1,0 +1,366 @@
+<mxfile host="app.diagrams.net" modified="2026-09-10T00:00:00.000Z" agent="devin" version="24.7.17">
+  <diagram name="Hook Architectures" id="hook-arch">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ==================== TITLE ==================== -->
+        <mxCell id="title" value="Ring Protocol Hook 架构对比" style="text;html=1;fontSize=26;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="500" y="10" width="500" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="5 种引流 Hook 的工作原理与差异" style="text;html=1;fontSize=14;fontColor=#666666;align=center;" vertex="1" parent="1">
+          <mxGeometry x="500" y="48" width="500" height="25" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== LEGEND ==================== -->
+        <mxCell id="legend_bg" value="" style="rounded=1;whiteSpace=wrap;fillColor=#fafafa;strokeColor=#cccccc;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="1620" height="45" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_user" value="User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="60" y="90" width="70" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_v4" value="V4 Pool" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="145" y="90" width="70" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_hook" value="Hook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="230" y="90" width="70" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_rv2" value="Ring V2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="315" y="90" width="70" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_fv4" value="FewV4 Pool" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="400" y="90" width="80" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_jit" value="JIT 流动性" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="495" y="90" width="90" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_delta" value="修改 Delta" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="600" y="90" width="90" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_few" value="Hook 存 FewToken" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dadaff;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="705" y="90" width="120" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg_note" value="说明：箭头编号 ①②③ 表示执行顺序" style="text;html=1;fontSize=11;fontColor=#888888;align=left;" vertex="1" parent="1">
+          <mxGeometry x="850" y="90" width="300" height="25" as="geometry"/>
+        </mxCell>
+
+        <!-- ================================================================ -->
+        <!-- GROUP 1: 聚合器模式 (Aggregator) -->
+        <!-- ================================================================ -->
+        <mxCell id="grp1" value="聚合器模式 (Aggregator) — 修改 Delta 直接返回，无 JIT" style="swimlane;startSize=30;fillColor=#f0f0f0;strokeColor=#999999;fontSize=15;fontStyle=1;swimlaneFillColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="30" y="140" width="1640" height="280" as="geometry"/>
+        </mxCell>
+
+        <!-- ---- Row 1: RingV2AggregatorHook ---- -->
+        <mxCell id="h1_name" value="RingV2AggregatorHook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="185" width="170" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_user" value="User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="185" width="90" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_v4" value="V4 Outer Pool&#xa;(hooked)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="400" y="185" width="110" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_hook" value="Hook&#xa;(beforeSwap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="185" width="110" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_rv2" value="Ring V2 Pool&#xa;(报价 + swap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="720" y="185" width="130" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_delta" value="修改 Delta&#xa;返回结果" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="900" y="185" width="110" height="50" as="geometry"/>
+        </mxCell>
+        <!-- Arrows -->
+        <mxCell id="h1_e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h1_user" target="h1_v4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h1_v4" target="h1_hook">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#82b366;" edge="1" parent="1" source="h1_hook" target="h1_rv2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#b85450;" edge="1" parent="1" source="h1_rv2" target="h1_delta">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1_e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#b85450;dashed=1;" edge="1" parent="1" source="h1_delta" target="h1_user">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="955" y="270"/>
+              <mxPoint x="305" y="270"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h1_notes" value="特点：&#xa;• 无 JIT 流动性&#xa;• Hook 不存 FewToken&#xa;• Ring V2 AMM 报价并执行 swap&#xa;• 通过修改 beforeSwap delta 直接返回" style="text;html=1;align=left;spacingLeft=6;fontSize=10;fillColor=#fffbe6;strokeColor=#d6b656;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="175" width="280" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- ---- Row 2: FewV4ShellHook ---- -->
+        <mxCell id="h2_name" value="FewV4ShellHook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="330" width="170" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_user" value="User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="330" width="90" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_v4" value="V4 Outer Pool&#xa;(hooked)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="400" y="330" width="110" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_hook" value="Hook&#xa;(beforeSwap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="330" width="110" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_fv4" value="FewToken V4 Pool&#xa;(报价 + swap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="720" y="330" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_delta" value="修改 Delta&#xa;返回结果" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="910" y="330" width="110" height="50" as="geometry"/>
+        </mxCell>
+        <!-- Arrows -->
+        <mxCell id="h2_e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h2_user" target="h2_v4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h2_v4" target="h2_hook">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d79b00;" edge="1" parent="1" source="h2_hook" target="h2_fv4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#b85450;" edge="1" parent="1" source="h2_fv4" target="h2_delta">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2_e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#b85450;dashed=1;" edge="1" parent="1" source="h2_delta" target="h2_user">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="965" y="415"/>
+              <mxPoint x="305" y="415"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h2_notes" value="特点：&#xa;• 无 JIT 流动性&#xa;• Hook 不存 FewToken&#xa;• FewToken V4 池报价并执行 swap&#xa;• 通过修改 beforeSwap delta 直接返回" style="text;html=1;align=left;spacingLeft=6;fontSize=10;fillColor=#fffbe6;strokeColor=#d6b656;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="320" width="280" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- ================================================================ -->
+        <!-- GROUP 2: JIT 流动性模式 (Backed Liquidity) -->
+        <!-- ================================================================ -->
+        <mxCell id="grp2" value="JIT 流动性模式 (Backed Liquidity) — JIT 插入 V4 池，afterSwap 移除" style="swimlane;startSize=30;fillColor=#f0f0f0;strokeColor=#999999;fontSize=15;fontStyle=1;swimlaneFillColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="30" y="440" width="1640" height="710" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ Row 3: RingShareLiqHook 2.0 ============ -->
+        <mxCell id="h3_name" value="RingShareLiqHook 2.0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="485" width="170" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_user" value="User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="485" width="90" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_v4" value="V4 Pool&#xa;(full-range base LP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="400" y="485" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_hook" value="Hook&#xa;存有 FewToken&#xa;+ V2 数学公式" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dadaff;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="590" y="475" width="140" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_jit_add" value="JIT 添加流动性&#xa;(modifyLiquidity)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="780" y="485" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_swap" value="User 交易&#xa;JIT 流动性" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="970" y="485" width="120" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_jit_rm" value="JIT 移除流动性&#xa;(afterSwap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="485" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <!-- Arrows -->
+        <mxCell id="h3_e1" value="① swap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h3_user" target="h3_v4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_e2" value="② beforeSwap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h3_v4" target="h3_hook">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_e3" value="③ V2公式算价" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#6c8ebf;" edge="1" parent="1" source="h3_hook" target="h3_jit_add">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_e4" value="④ JIT 入池" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d6b656;" edge="1" parent="1" source="h3_jit_add" target="h3_v4">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="850" y="565"/>
+              <mxPoint x="470" y="565"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h3_e5" value="⑤ 交易JIT" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#6c8ebf;" edge="1" parent="1" source="h3_v4" target="h3_swap">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_e6" value="⑥ afterSwap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d6b656;" edge="1" parent="1" source="h3_swap" target="h3_jit_rm">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3_e7" value="⑦ 返回" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;dashed=1;" edge="1" parent="1" source="h3_swap" target="h3_user">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1030" y="580"/>
+              <mxPoint x="305" y="580"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h3_notes" value="特点：&#xa;• Hook 自己存有 FewToken（紫色框）&#xa;• 用 V2 AMM 数学公式计算价格（不调外部池）&#xa;• JIT 流动性插入 V4 池供用户交易&#xa;• afterSwap 移除 JIT，结算 rounding&#xa;• 无外部后端池执行" style="text;html=1;align=left;spacingLeft=6;fontSize=10;fillColor=#fffbe6;strokeColor=#d6b656;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="470" width="300" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ Row 4: RingV2BackedLiqHook ============ -->
+        <mxCell id="h4_name" value="RingV2BackedLiqHook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="640" width="170" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_user" value="User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="640" width="90" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_v4" value="V4 Pool&#xa;(full-range base LP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="400" y="640" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_hook" value="Hook&#xa;(不存 FewToken)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="590" y="640" width="130" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_rv2" value="Ring V2 Pool&#xa;(报价 + 真实 swap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="770" y="640" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_jit_add" value="JIT 添加流动性&#xa;(modifyLiquidity)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="960" y="640" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_swap" value="User 交易&#xa;JIT 流动性" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="640" width="120" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_jit_rm" value="JIT 移除&#xa;(afterSwap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="640" width="110" height="50" as="geometry"/>
+        </mxCell>
+        <!-- Arrows -->
+        <mxCell id="h4_e1" value="① swap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h4_user" target="h4_v4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_e2" value="② beforeSwap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h4_v4" target="h4_hook">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_e3" value="③ 报价+swap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#82b366;" edge="1" parent="1" source="h4_hook" target="h4_rv2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_e4" value="④ 真实流动性" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#82b366;" edge="1" parent="1" source="h4_rv2" target="h4_jit_add">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_e5" value="⑤ JIT 入池" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d6b656;" edge="1" parent="1" source="h4_jit_add" target="h4_v4">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1030" y="720"/>
+              <mxPoint x="470" y="720"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h4_e6" value="⑥ 交易JIT" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#6c8ebf;" edge="1" parent="1" source="h4_v4" target="h4_swap">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="540" y="730"/>
+              <mxPoint x="1210" y="730"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h4_e7" value="⑦ afterSwap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d6b656;" edge="1" parent="1" source="h4_swap" target="h4_jit_rm">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h4_e8" value="⑧ 返回" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;dashed=1;" edge="1" parent="1" source="h4_swap" target="h4_user">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1210" y="745"/>
+              <mxPoint x="305" y="745"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h4_notes" value="特点：&#xa;• Hook 不存 FewToken&#xa;• Ring V2 池提供真实流动性（wrap → swap → unwrap）&#xa;• JIT 流动性插入 V4 池供用户交易&#xa;• afterSwap 移除 JIT，结算 rounding&#xa;• 后端：Ring V2 AMM" style="text;html=1;align=left;spacingLeft=6;fontSize=10;fillColor=#fffbe6;strokeColor=#d6b656;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="625" width="200" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ Row 5: RingV4BackedLiqHook ============ -->
+        <mxCell id="h5_name" value="RingV4BackedLiqHook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="830" width="170" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_user" value="User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="830" width="90" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_v4" value="V4 Pool&#xa;(full-range base LP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="400" y="830" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_hook" value="Hook&#xa;(不存 FewToken&#xa;不用 Ring V2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="590" y="820" width="140" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_fv4" value="FewToken V4 Pool&#xa;(报价 + 真实 swap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="780" y="830" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_jit_add" value="JIT 添加流动性&#xa;(modifyLiquidity)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="980" y="830" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_swap" value="User 交易&#xa;JIT 流动性" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="830" width="120" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_jit_rm" value="JIT 移除&#xa;(afterSwap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="830" width="110" height="50" as="geometry"/>
+        </mxCell>
+        <!-- Arrows -->
+        <mxCell id="h5_e1" value="① swap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h5_user" target="h5_v4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_e2" value="② beforeSwap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;" edge="1" parent="1" source="h5_v4" target="h5_hook">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_e3" value="③ 报价+swap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d79b00;" edge="1" parent="1" source="h5_hook" target="h5_fv4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_e4" value="④ 真实流动性" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d79b00;" edge="1" parent="1" source="h5_fv4" target="h5_jit_add">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_e5" value="⑤ JIT 入池" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d6b656;" edge="1" parent="1" source="h5_jit_add" target="h5_v4">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1050" y="910"/>
+              <mxPoint x="470" y="910"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h5_e6" value="⑥ 交易JIT" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#6c8ebf;" edge="1" parent="1" source="h5_v4" target="h5_swap">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="540" y="920"/>
+              <mxPoint x="1230" y="920"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h5_e7" value="⑦ afterSwap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#d6b656;" edge="1" parent="1" source="h5_swap" target="h5_jit_rm">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="h5_e8" value="⑧ 返回" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#333333;dashed=1;" edge="1" parent="1" source="h5_swap" target="h5_user">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1230" y="935"/>
+              <mxPoint x="305" y="935"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="h5_notes" value="特点：&#xa;• Hook 不存 FewToken，不用 Ring V2&#xa;• FewToken V4 池提供真实流动性（wrap → v4 swap → unwrap）&#xa;• JIT 流动性插入 V4 池供用户交易&#xa;• afterSwap 移除 JIT，结算 rounding&#xa;• 后端：FewToken V4 Pool（setFbPool 配置）" style="text;html=1;align=left;spacingLeft=6;fontSize=10;fillColor=#fffbe6;strokeColor=#d6b656;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="1480" y="815" width="180" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ Comparison Summary ============ -->
+        <mxCell id="summary_bg" value="" style="rounded=1;whiteSpace=wrap;fillColor=#f9f9f9;strokeColor=#cccccc;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1010" width="1620" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="summary_title" value="对比总结" style="text;html=1;fontSize=14;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="55" y="1015" width="200" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="summary1" value="聚合器模式 (RingV2Aggregator / FewV4Shell)：Hook 在 beforeSwap 中直接调用后端完成 swap，通过修改 delta 返回结果。V4 池本身不执行交易，仅作为入口。" style="text;html=1;fontSize=11;align=left;spacingLeft=6;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="55" y="1045" width="1550" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="summary2" value="JIT 模式 (ShareLiq 2.0 / V2Backed / V4Backed)：Hook 在 beforeSwap 中从后端获取真实流动性，以 JIT 方式插入 V4 池，用户在 V4 池中与 JIT 流动性交易，afterSwap 移除 JIT。" style="text;html=1;fontSize=11;align=left;spacingLeft=6;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="55" y="1072" width="1550" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="summary3" value="ShareLiq 2.0 = Hook 自存 FewToken + V2 公式算价（无外部后端执行）  |  V2Backed = Ring V2 池做后端  |  V4Backed = FewToken V4 池做后端（setFbPool 可配置）" style="text;html=1;fontSize=11;align=left;spacingLeft=6;fontColor=#555555;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="55" y="1099" width="1550" height="25" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
