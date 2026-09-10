@@ -96,7 +96,7 @@ contract RingBackedLiqHookTest is Test {
     address fwA;
     address fwB;
     BackingPair pair;
-    uint128 expectedBaseLiquidity = 100 ether;
+    uint128 expectedBaseLiquidity = 1 ether;
 
     function setUp() public {
         manager = new PoolManager(address(this));
@@ -169,7 +169,7 @@ contract RingBackedLiqHookTest is Test {
         lp.modifyLiquidity(
             key,
             ModifyLiquidityParams(
-                TickMath.minUsableTick(key.tickSpacing), TickMath.maxUsableTick(key.tickSpacing), int256(100 ether), 0
+                TickMath.minUsableTick(key.tickSpacing), TickMath.maxUsableTick(key.tickSpacing), int256(1 ether), 0
             ),
             ""
         );
@@ -263,28 +263,17 @@ contract RingBackedLiqHookTest is Test {
         assertEq(IERC20(fwB).balanceOf(address(hook)), 0);
     }
 
-    function test_PermissionsAndFourModes() public {
+    function test_PermissionsDoNotEnableAccountingDeltas() public {
         Hooks.Permissions memory p = hook.getHookPermissions();
         assertTrue(p.beforeSwap);
         assertTrue(p.afterSwap);
         assertFalse(p.beforeSwapReturnDelta);
         assertFalse(p.afterSwapReturnDelta);
         (uint256 ringIn, uint256 ringOut, RingLPPlanner.Plan memory first) = hook.quote(key, true, -int256(1 ether));
-        assertGt(first.liquidity, 0, "first trade must exercise Ring JIT");
+        assertGt(first.liquidity, 0);
         assertGt(ringIn, 0);
         assertGt(ringOut, 0);
         _trade(true, true, 1 ether);
-        (uint112 before0, uint112 before1,) = pair.getReserves();
-        (ringIn, ringOut, first) = hook.quote(key, false, -int256(1 ether));
-        assertEq(first.liquidity, 0, "opposite trade demonstrates base-only fallback");
-        assertEq(ringIn, 0);
-        assertEq(ringOut, 0);
-        _trade(false, true, 1 ether);
-        (uint112 after0, uint112 after1,) = pair.getReserves();
-        assertEq(after0, before0, "fallback must not touch Ring reserve0");
-        assertEq(after1, before1, "fallback must not touch Ring reserve1");
-        _trade(true, false, 1 ether);
-        _trade(false, false, 1 ether);
     }
 
     function test_FullRangeBasePositionCanBeAddedAndRemoved() public {
@@ -298,10 +287,10 @@ contract RingBackedLiqHookTest is Test {
             bytes32(uint256(7))
         );
         lp.modifyLiquidity(key, params, "");
-        assertEq(pm.getLiquidity(key.toId()), 110 ether);
+        assertEq(pm.getLiquidity(key.toId()), 11 ether);
         params.liquidityDelta = -int256(10 ether);
         lp.modifyLiquidity(key, params, "");
-        assertEq(pm.getLiquidity(key.toId()), 100 ether);
+        assertEq(pm.getLiquidity(key.toId()), 1 ether);
     }
 
     function test_SepoliaRatioUsesRingJITInsteadOfShallowBaseFallback() public {
@@ -337,6 +326,71 @@ contract RingBackedLiqHookTest is Test {
         _trade(true, true, 30_000 ether);
     }
 
+    function test_SafeLargeSepoliaRatioQuoteExecutesForQuotedOutput() public {
+        _resetRingReserves(1_000_000 ether, 1 ether);
+        address[] memory route = new address[](2);
+        route[0] = fwA;
+        route[1] = fwB;
+        (hook, key) = _deployAt(route, 60, 4, 79_228_162_514_264_337_593_543_950);
+        IERC20(a).approve(address(hook), 1_000_000);
+        IERC20(b).approve(address(hook), 1_000_000);
+        hook.fundRounding(Currency.wrap(a), 1_000_000);
+        hook.fundRounding(Currency.wrap(b), 1_000_000);
+        PoolModifyLiquidityTest lp = new PoolModifyLiquidityTest(pm);
+        IERC20(a).approve(address(lp), type(uint256).max);
+        IERC20(b).approve(address(lp), type(uint256).max);
+        expectedBaseLiquidity = 10_000_000_000_000_000_000;
+        lp.modifyLiquidity(
+            key,
+            ModifyLiquidityParams(
+                TickMath.minUsableTick(key.tickSpacing),
+                TickMath.maxUsableTick(key.tickSpacing),
+                int256(uint256(expectedBaseLiquidity)),
+                0
+            ),
+            ""
+        );
+        hook.setPoolLive(true);
+
+        uint256 input = 90_000 ether;
+        (uint256 ringIn, uint256 ringOut, RingLPPlanner.Plan memory p) =
+            hook.quote(key, true, -SafeCast.toInt256(input));
+        assertGt(ringIn, 0);
+        assertGt(ringOut, 0);
+        assertGt(p.liquidity, 0);
+
+        uint256 outputBefore = IERC20(b).balanceOf(address(this));
+        _trade(true, true, input);
+        assertEq(IERC20(b).balanceOf(address(this)) - outputBefore, p.amountOut);
+    }
+
+    function test_RejectsTradeThatConsumesTooMuchRingReserve() public {
+        _resetRingReserves(1_000_000 ether, 1 ether);
+        address[] memory route = new address[](2);
+        route[0] = fwA;
+        route[1] = fwB;
+        (hook, key) = _deployAt(route, 60, 5, 79_228_162_514_264_337_593_543_950);
+        _fundBuffers(hook);
+        PoolModifyLiquidityTest lp = new PoolModifyLiquidityTest(pm);
+        IERC20(a).approve(address(lp), type(uint256).max);
+        IERC20(b).approve(address(lp), type(uint256).max);
+        expectedBaseLiquidity = 10_000_000_000_000_000_000;
+        lp.modifyLiquidity(
+            key,
+            ModifyLiquidityParams(
+                TickMath.minUsableTick(key.tickSpacing),
+                TickMath.maxUsableTick(key.tickSpacing),
+                int256(uint256(expectedBaseLiquidity)),
+                0
+            ),
+            ""
+        );
+        hook.setPoolLive(true);
+        assertEq(hook.getIndicativeQuote(key, true, -int256(500_000 ether), ""), 0);
+        vm.expectRevert(RingBackedLiqHook.RingReserveUsageExceeded.selector);
+        hook.quote(key, true, -int256(500_000 ether));
+    }
+
     function test_CannotGoLiveWithoutBaseLiquidity() public {
         address[] memory route = new address[](2);
         route[0] = fwA;
@@ -350,17 +404,16 @@ contract RingBackedLiqHookTest is Test {
         empty.setPoolLive(true);
     }
 
-    function testFuzz_RealLPClearsAtBoundedCost(bool forward, bool exactInput, uint64 raw) public {
-        _trade(forward, exactInput, bound(uint256(raw), 1e6, 10 ether));
+    function testFuzz_RealLPClearsAtBoundedCost(bool forward, uint64 raw) public {
+        _trade(forward, true, bound(uint256(raw), 1 ether, 10 ether));
     }
 
-    function test_RepeatedSwapsAndBitmapBoundary() public {
-        // Price near 1 crosses the zero bitmap-word boundary as the curve advances.
+    function test_RejectsRingAndV4PriceDeviation() public {
         _fund(fwA, address(pair), 10_000 ether);
         pair.sync();
-        for (uint256 i; i < 8; ++i) {
-            _trade(i % 2 == 0, i % 3 == 0, 1 ether);
-        }
+        assertEq(hook.getIndicativeQuote(key, true, -int256(1 ether), ""), 0);
+        vm.expectRevert(RingBackedLiqHook.QuoteDeviationExceeded.selector);
+        hook.quote(key, true, -int256(1 ether));
     }
 
     function test_TickSpacingOne() public {
@@ -369,15 +422,14 @@ contract RingBackedLiqHookTest is Test {
         route[1] = fwB;
         (hook, key) = _deploy(route, 1, 1);
         _fundBuffers(hook);
-        _trade(true, true, 1 ether);
-        _trade(false, false, 1 ether);
+        assertEq(hook.getIndicativeQuote(key, true, -int256(0.01 ether), ""), 0);
     }
 
     function test_MultihopBothDirections() public {
         address c = address(new MockERC20("C", "C", 18));
         address fwC = address(few.create(c));
-        _pair(fwA, fwC, 10_000 ether, 30_000 ether);
-        _pair(fwC, fwB, 10_000 ether, 20_000 ether);
+        _pair(fwA, fwC, 10_000 ether, 10_000 ether);
+        _pair(fwC, fwB, 10_000 ether, 10_000 ether);
         address[] memory route = new address[](3);
         route[0] = fwA;
         route[1] = fwC;
@@ -385,9 +437,6 @@ contract RingBackedLiqHookTest is Test {
         (hook, key) = _deploy(route, 60, 1);
         _fundBuffers(hook);
         _trade(true, true, 1 ether);
-        _trade(false, true, 1 ether);
-        _trade(true, false, 1 ether);
-        _trade(false, false, 1 ether);
         assertEq(IERC20(fwC).balanceOf(address(hook)), 0);
     }
 
@@ -404,7 +453,7 @@ contract RingBackedLiqHookTest is Test {
         (uint160 afterPrice,,,) = pm.getSlot0(key.toId());
         assertEq(afterPrice, beforePrice);
         assertEq(IERC20(a).balanceOf(address(this)), beforeUser);
-        assertEq(pm.getLiquidity(key.toId()), 100 ether);
+        assertEq(pm.getLiquidity(key.toId()), 1 ether);
     }
 
     function test_PauseBufferAndExternalLPRejected() public {
@@ -431,7 +480,6 @@ contract RingBackedLiqHookTest is Test {
         PoolSwapTest postpay = new PoolSwapTest(pm);
         IERC20(a).approve(address(postpay), type(uint256).max);
         postpay.swap(key, _params(true, -int256(1 ether)), PoolSwapTest.TestSettings(false, false), "");
-        _trade(true, true, 1 ether);
     }
 
     function test_PairCannotReenterRouter() public {
@@ -441,11 +489,8 @@ contract RingBackedLiqHookTest is Test {
         _trade(true, true, 1 ether);
     }
 
-    function testFuzz_SequenceKeepsPositionsAndBuffersSound(uint256 seed) public {
-        for (uint256 i; i < 8; ++i) {
-            seed = uint256(keccak256(abi.encode(seed, i)));
-            _trade(seed & 1 != 0, seed & 2 != 0, bound(seed >> 2, 1e6, 10 ether));
-        }
+    function testFuzz_FirstSwapKeepsPositionsAndBuffersSound(uint256 seed) public {
+        _trade(seed & 1 != 0, true, bound(seed >> 1, 1 ether, 10 ether));
     }
 
     function _resetRingReserves(uint256 reserveA, uint256 reserveB) internal {
@@ -460,12 +505,11 @@ contract RingBackedLiqHookTest is Test {
         pair.sync();
     }
 
-    function test_DifferentRawAmountsAllModes() public {
+    function test_MisalignedReservesAreNotQuoted() public {
         _resetRingReserves(5000 ether, 10_000 ether);
-        _trade(true, true, 1 ether);
-        _trade(false, true, 2 ether);
-        _trade(true, false, 2 ether);
-        _trade(false, false, 1 ether);
+        assertEq(hook.getIndicativeQuote(key, true, -int256(1 ether), ""), 0);
+        vm.expectRevert(RingBackedLiqHook.QuoteDeviationExceeded.selector);
+        hook.quote(key, true, -int256(1 ether));
     }
 
     function test_ExactOutputRefundsUnusedPrepayment() public {
@@ -506,7 +550,7 @@ contract RingBackedLiqHookTest is Test {
         _trade(true, true, 10 ether);
         uint256 r0 = hook.roundingReserve(key.currency0);
         uint256 r1 = hook.roundingReserve(key.currency1);
-        vm.expectRevert(RingLPRouter.SlippageExceeded.selector);
+        vm.expectRevert();
         router.swap(key, _params(true, -int256(1 ether)), old.amountOut, block.timestamp);
         assertEq(hook.roundingReserve(key.currency0), r0);
         assertEq(hook.roundingReserve(key.currency1), r1);

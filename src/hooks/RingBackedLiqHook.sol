@@ -40,6 +40,10 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
     using TransientStateLibrary for IPoolManager;
     uint256 public constant MAX_ROUNDING_LOSS = 8; // raw token units per currency per successful swap
     uint256 public constant MIN_BUFFER = 16;
+    uint256 public constant MAX_SPOT_DEVIATION_BPS = 500;
+    uint256 public constant MAX_RING_RESERVE_USAGE_BPS = 1_000;
+    uint256 public constant MAX_BASE_OUTPUT_SHARE_BPS = 500;
+    uint256 private constant BPS = 10_000;
     bytes32 private constant LP_SALT = keccak256("RingBackedLiqHook.position");
     IFewFactory public immutable fewFactory;
     ISwapV2Factory public immutable fewV2Factory;
@@ -67,6 +71,10 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
     error PriceLimitExceeded();
     error UnexpectedLiquidity();
     error RoundingLossExceeded();
+    error NoRingBackedPlan();
+    error QuoteDeviationExceeded();
+    error RingReserveUsageExceeded();
+    error BaseExposureExceeded();
     error InvalidRecipient();
     error RenounceOwnershipDisabled();
     event PoolCreated(PoolId indexed poolId);
@@ -207,7 +215,13 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
         uint128 baseLiquidity = poolManager.getLiquidity(configuredPoolId);
         if (baseLiquidity == 0) revert UnexpectedLiquidity();
         (uint160 start,,,) = poolManager.getSlot0(configuredPoolId);
+        _requireRingAligned(start, baseLiquidity, forward, key.tickSpacing, tokens, pairs);
         (ringIn, ringOut, p) = _findHybridPlan(start, baseLiquidity, specified, forward, key.tickSpacing, tokens, pairs);
+        if (p.liquidity == 0 || ringIn == 0 || ringOut == 0) revert NoRingBackedPlan();
+        _requireRingReserveCapacity(tokens, pairs, ringOut);
+        if (ringOut > p.amountOut) revert UnexpectedFill();
+        uint256 baseOutput = p.amountOut - ringOut;
+        if (baseOutput * BPS > p.amountOut * MAX_BASE_OUTPUT_SHARE_BPS) revert BaseExposureExceeded();
     }
 
     function _beforeInitialize(address, PoolKey calldata, uint160) internal pure override returns (bytes4) {
@@ -381,12 +395,44 @@ contract RingBackedLiqHook is BaseHook, DeltaResolver, Ownable2Step, ReentrancyG
         if (surplus.liquidity != 0 && surplusDifference <= _inputQuantum(tokens, pairs, surplusRingOut)) {
             (ringIn, ringOut, best) = (surplusRingIn, surplusRingOut, surplus);
         } else if (best.liquidity == 0 || bestDifference > MAX_ROUNDING_LOSS) {
-            (best.end, best.amountIn, best.amountOut) =
-                RingLPPlanner.simulate(start, baseLiquidity, specified, forward, spacing);
-            best.start = start;
-            best.liquidity = 0;
-            ringIn = 0;
-            ringOut = 0;
+            revert NoRingBackedPlan();
+        }
+    }
+
+    function _requireRingAligned(
+        uint160 start,
+        uint128 baseLiquidity,
+        bool forward,
+        int24 spacing,
+        address[] memory tokens,
+        address[] memory pairs
+    ) private view {
+        (uint256 reserveIn,,) = _reserves(pairs[0], tokens[0], tokens[1]);
+        // Keep the comparison marginal on both venues. A larger probe measures the shallow
+        // permanent LP's own price impact and can falsely report equal spot prices as divergent.
+        uint256 probe = reserveIn / 1_000_000_000;
+        if (probe == 0 || probe > uint256(uint128(type(int128).max))) revert QuoteDeviationExceeded();
+        uint256[] memory ringAmounts = _amounts(tokens, pairs, -SafeCast.toInt256(probe));
+        (, uint256 v4Input, uint256 v4Output) =
+            RingLPPlanner.simulate(start, baseLiquidity, -SafeCast.toInt256(probe), forward, spacing);
+        uint256 ringOutput = ringAmounts[ringAmounts.length - 1];
+        if (v4Input != probe || ringOutput == 0) revert QuoteDeviationExceeded();
+        uint256 difference = v4Output > ringOutput ? v4Output - ringOutput : ringOutput - v4Output;
+        uint256 deviationBps = (difference * BPS + ringOutput - 1) / ringOutput;
+        if (deviationBps > pairs.length * 30 + MAX_SPOT_DEVIATION_BPS) revert QuoteDeviationExceeded();
+    }
+
+    function _requireRingReserveCapacity(address[] memory tokens, address[] memory pairs, uint256 ringOutput)
+        private
+        view
+    {
+        uint256[] memory amounts = _amounts(tokens, pairs, SafeCast.toInt256(ringOutput));
+        for (uint256 i; i < pairs.length; ++i) {
+            (uint256 reserveIn, uint256 reserveOut,) = _reserves(pairs[i], tokens[i], tokens[i + 1]);
+            if (
+                amounts[i] * BPS > reserveIn * MAX_RING_RESERVE_USAGE_BPS
+                    || amounts[i + 1] * BPS > reserveOut * MAX_RING_RESERVE_USAGE_BPS
+            ) revert RingReserveUsageExceeded();
         }
     }
 

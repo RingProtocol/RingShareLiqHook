@@ -15,6 +15,10 @@ library RingLPPlanner {
     uint256 internal constant MIN_AMOUNT = 10_000;
     uint256 internal constant MAX_AMOUNT = type(uint96).max;
     uint256 internal constant MAX_PRICE_ROUNDING = 2;
+    // A shallow permanent position can cross several empty bitmap words before the
+    // JIT-liquidity search has grown its first candidate. Keep the simulation
+    // bounded, while allowing those valid large orders to reach a larger candidate.
+    uint256 internal constant MAX_BITMAP_STEPS = 16;
     error UnrepresentableOrder();
 
     struct Plan {
@@ -130,7 +134,8 @@ library RingLPPlanner {
     }
 
     /// @dev Constant liquidity, no initialized interior ticks, and a full-range price limit.
-    ///      With L=1000*sqrt(in*out) the intended trade is short; four bitmap steps suffice.
+    ///      The hybrid solver starts from the permanent liquidity, so its first candidates
+    ///      may travel farther than the final JIT position before the search converges.
     function simulate(uint160 start, uint128 liquidity, int256 specified, bool zeroForOne, int24 spacing)
         internal
         pure
@@ -139,7 +144,7 @@ library RingLPPlanner {
         price = start;
         int24 tick = TickMath.getTickAtSqrtPrice(price);
         int256 remaining = specified;
-        for (uint256 i; i < 4 && remaining != 0; ++i) {
+        for (uint256 i; i < MAX_BITMAP_STEPS && remaining != 0; ++i) {
             int24 compressed = _floor(tick, spacing);
             int24 next =
                 zeroForOne ? (compressed >> 8) * 256 * spacing : (((compressed + 1) >> 8) * 256 + 255) * spacing;
